@@ -100,6 +100,38 @@ pub fn current_resolution() -> crate::types::Resolution {
     }
 }
 
+/// Atualiza a área de trabalho (equivalente ao F5), sem bloquear.
+///
+/// Envia a tecla F5 para o SysListView32 da área de trabalho e notifica o
+/// shell via SHChangeNotify (fallback que funciona mesmo se a janela não for
+/// encontrada).
+pub fn refresh_desktop() -> Result<()> {
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::Input::KeyboardAndMouse::VK_F5;
+    use windows::Win32::UI::Shell::{
+        SHChangeNotify, SHCNE_ASSOCCHANGED, SHCNF_FLUSH, SHCNF_IDLIST,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_KEYDOWN, WM_KEYUP};
+
+    if let Ok(listview) = find_desktop_listview() {
+        unsafe {
+            let wparam = WPARAM(VK_F5.0 as usize);
+            let _ = PostMessageW(listview, WM_KEYDOWN, wparam, LPARAM(0));
+            let _ = PostMessageW(listview, WM_KEYUP, wparam, LPARAM(0));
+        }
+    }
+
+    unsafe {
+        SHChangeNotify(
+            SHCNE_ASSOCCHANGED,
+            SHCNF_IDLIST | SHCNF_FLUSH,
+            None,
+            None,
+        );
+    }
+    Ok(())
+}
+
 pub fn refresh(listview: HWND) {
     use windows::Win32::Graphics::Gdi::HRGN;
     use windows::Win32::Graphics::Gdi::{

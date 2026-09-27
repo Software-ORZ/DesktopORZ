@@ -119,6 +119,7 @@ fn run(args: &[String]) -> Result<String, String> {
         Some("restore") => {
             let name = profile_name_arg(args)?;
             let profile = load_profile(&name)?;
+            let _ = shell_locator::refresh_desktop();
             let moved = layout::restore_layout(&profile).map_err(|e| format!("{e}"))?;
             Ok(t_args(
                 "restore.success",
@@ -294,6 +295,7 @@ fn wait_drive_run() -> Result<String, String> {
         )
     );
     let perfil_dados = load_profile(&perfil)?;
+    let _ = shell_locator::refresh_desktop();
     let movidos = layout::restore_layout(&perfil_dados).map_err(|e| format!("{e}"))?;
     Ok(t_args(
         "wait_drive.run_restored",
