@@ -17,6 +17,8 @@ pub struct CliConfig {
     pub startup: Option<StartupMirror>,
     #[serde(default)]
     pub wait_drive: Option<WaitDriveMirror>,
+    #[serde(default)]
+    pub hide_icons: Option<HideIconsMirror>,
 }
 
 impl Default for CliConfig {
@@ -25,6 +27,7 @@ impl Default for CliConfig {
             language: default_language(),
             startup: None,
             wait_drive: None,
+            hide_icons: None,
         }
     }
 }
@@ -37,6 +40,14 @@ pub struct StartupMirror {
     pub profile: Option<String>,
     #[serde(default)]
     pub command: Option<String>,
+}
+
+/// Espelho da configuração do hide-icons (source of truth: registro).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HideIconsMirror {
+    pub enabled: bool,
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
 }
 
 /// Espelho da configuração do wait-drive (source of truth: registro).
@@ -108,5 +119,15 @@ pub fn get_wait_drive() -> Option<WaitDriveMirror> {
 pub fn set_wait_drive(mirror: Option<WaitDriveMirror>) {
     let mut config = load_or_create_config();
     config.wait_drive = mirror;
+    let _ = save_config(&config);
+}
+
+pub fn get_hide_icons() -> Option<HideIconsMirror> {
+    load_or_create_config().hide_icons
+}
+
+pub fn set_hide_icons(mirror: Option<HideIconsMirror>) {
+    let mut config = load_or_create_config();
+    config.hide_icons = mirror;
     let _ = save_config(&config);
 }

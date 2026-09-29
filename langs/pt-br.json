@@ -63,6 +63,19 @@
     "timeout_on": "{seconds}s",
     "timeout_off": "sem timeout"
   },
+  "hide_icons": {
+    "usage": "Uso: hide-icons [on <segundos> | off | status]",
+    "timeout_zero": "O tempo de espera deve ser maior que zero.",
+    "disabled_error": "Ocultar ícones está desativado.",
+    "error_open_key": "Erro ao abrir a chave do Registro: {error}",
+    "error_create_key": "Erro ao criar a chave do Registro: {error}",
+    "error_write": "Erro ao gravar no Registro: {error}",
+    "enable_success": "Ocultar ícones ativado: a área de trabalho será limpa após {seconds}s de inatividade do mouse.",
+    "disabled": "Ocultar ícones desativado.",
+    "status_disabled": "Ocultar ícones: desativado.",
+    "status_enabled": "Ocultar ícones: ativado. Oculta após {seconds}s de inatividade.",
+    "run_stopped": "Monitoramento de ocultar ícones encerrado (desativado)."
+  },
   "process_watcher": {
     "timeout": "Tempo esgotado aguardando o processo '{process}' ({seconds}s)."
   },
@@ -72,6 +85,6 @@
     "changed": "Idioma alterado para '{lang}'."
   },
   "help": {
-    "text": "DesktopORZ — gerenciador de layout de ícones da área de trabalho\n\nUso:\n  save <perfil>                     Salva o layout atual no perfil\n  save-res <perfil> [<L>x<A>]       Salva o layout para uma resolução específica\n  profile-update <perfil>           Atualiza o layout principal do perfil\n  restore <perfil>                  Restaura o layout do perfil\n  list                              Lista os perfis salvos\n  startup [on <perfil>|off|status]  Gerencia a inicialização automática\n  wait-drive [on <perfil> [--timeout <s>]|off|status]  Aguarda o Google Drive ao iniciar\n  lang [<sigla>]                    Mostra ou altera o idioma (ex.: lang en)\n  help                              Mostra esta ajuda"
+    "text": "DesktopORZ — gerenciador de layout de ícones da área de trabalho\n\nUso:\n  save <perfil>                     Salva o layout atual no perfil\n  save-res <perfil> [<L>x<A>]       Salva o layout para uma resolução específica\n  profile-update <perfil>           Atualiza o layout principal do perfil\n  restore <perfil>                  Restaura o layout do perfil\n  list                              Lista os perfis salvos\n  startup [on <perfil>|off|status]  Gerencia a inicialização automática\n  wait-drive [on <perfil> [--timeout <s>]|off|status]  Aguarda o Google Drive ao iniciar\n  hide-icons [on <s>|off|status]      Oculta os ícones após inatividade do mouse\n  lang [<sigla>]                    Mostra ou altera o idioma (ex.: lang en)\n  help                              Mostra esta ajuda"
   }
 }

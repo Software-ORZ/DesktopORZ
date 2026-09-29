@@ -63,6 +63,19 @@
     "timeout_on": "{seconds}s",
     "timeout_off": "no timeout"
   },
+  "hide_icons": {
+    "usage": "Usage: hide-icons [on <seconds> | off | status]",
+    "timeout_zero": "Timeout must be greater than zero.",
+    "disabled_error": "Hide icons is disabled.",
+    "error_open_key": "Error opening the Registry key: {error}",
+    "error_create_key": "Error creating the Registry key: {error}",
+    "error_write": "Error writing to the Registry: {error}",
+    "enable_success": "Hide icons enabled: the desktop will be cleared after {seconds}s of mouse inactivity.",
+    "disabled": "Hide icons disabled.",
+    "status_disabled": "Hide icons: disabled.",
+    "status_enabled": "Hide icons: enabled. Hides after {seconds}s of inactivity.",
+    "run_stopped": "Hide icons monitoring stopped (disabled)."
+  },
   "process_watcher": {
     "timeout": "Timed out waiting for process '{process}' ({seconds}s)."
   },
@@ -72,6 +85,6 @@
     "changed": "Language changed to '{lang}'."
   },
   "help": {
-    "text": "DesktopORZ — desktop icon layout manager\n\nUsage:\n  save <profile>                    Saves the current layout to the profile\n  save-res <profile> [<W>x<H>]      Saves the layout for a specific resolution\n  profile-update <profile>          Updates the profile's main layout\n  restore <profile>                 Restores the profile's layout\n  list                              Lists saved profiles\n  startup [on <profile>|off|status]  Manages automatic startup\n  wait-drive [on <profile> [--timeout <s>]|off|status]  Waits for Google Drive at startup\n  lang [<code>]                     Shows or changes the language (e.g., lang en)\n  help                              Shows this help"
+    "text": "DesktopORZ — desktop icon layout manager\n\nUsage:\n  save <profile>                    Saves the current layout to the profile\n  save-res <profile> [<W>x<H>]      Saves the layout for a specific resolution\n  profile-update <profile>          Updates the profile's main layout\n  restore <profile>                 Restores the profile's layout\n  list                              Lists saved profiles\n  startup [on <profile>|off|status]  Manages automatic startup\n  wait-drive [on <profile> [--timeout <s>]|off|status]  Waits for Google Drive at startup\n  hide-icons [on <s>|off|status]     Hides icons after mouse inactivity\n  lang [<code>]                     Shows or changes the language (e.g., lang en)\n  help                              Shows this help"
   }
 }

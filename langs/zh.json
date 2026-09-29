@@ -63,6 +63,19 @@
     "timeout_on": "{seconds} 秒",
     "timeout_off": "无超时"
   },
+  "hide_icons": {
+    "usage": "用法：hide-icons [on <秒> | off | status]",
+    "timeout_zero": "超时必须大于零。",
+    "disabled_error": "隐藏图标已禁用。",
+    "error_open_key": "打开注册表项时出错：{error}",
+    "error_create_key": "创建注册表项时出错：{error}",
+    "error_write": "写入注册表时出错：{error}",
+    "enable_success": "隐藏图标已启用：鼠标空闲 {seconds} 秒后将清空桌面。",
+    "disabled": "隐藏图标已禁用。",
+    "status_disabled": "隐藏图标：已禁用。",
+    "status_enabled": "隐藏图标：已启用。空闲 {seconds} 秒后隐藏。",
+    "run_stopped": "隐藏图标监控已停止（已禁用）。"
+  },
   "process_watcher": {
     "timeout": "等待进程 '{process}' 超时（{seconds} 秒）。"
   },
@@ -72,6 +85,6 @@
     "changed": "语言已更改为 '{lang}'。"
   },
   "help": {
-    "text": "DesktopORZ — 桌面图标布局管理器\n\n用法：\n  save <配置文件>                    将当前布局保存到配置文件\n  save-res <配置文件> [<宽>x<高>]      为特定分辨率保存布局\n  profile-update <配置文件>          更新配置文件的主布局\n  restore <配置文件>                 恢复配置文件的布局\n  list                              列出已保存的配置文件\n  startup [on <配置文件>|off|status]  管理自动启动\n  wait-drive [on <配置文件> [--timeout <秒>]|off|status]  启动时等待 Google Drive\n  lang [<代码>]                     显示或更改语言（例如 lang zh）\n  help                              显示此帮助"
+    "text": "DesktopORZ — 桌面图标布局管理器\n\n用法：\n  save <配置文件>                    将当前布局保存到配置文件\n  save-res <配置文件> [<宽>x<高>]      为特定分辨率保存布局\n  profile-update <配置文件>          更新配置文件的主布局\n  restore <配置文件>                 恢复配置文件的布局\n  list                              列出已保存的配置文件\n  startup [on <配置文件>|off|status]  管理自动启动\n  wait-drive [on <配置文件> [--timeout <秒>]|off|status]  启动时等待 Google Drive\n  hide-icons [on <秒>|off|status]     鼠标空闲后隐藏图标\n  lang [<代码>]                     显示或更改语言（例如 lang zh）\n  help                              显示此帮助"
   }
 }

@@ -13,23 +13,16 @@
 //
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
-mod config;
-mod i18n;
-mod layout;
-mod process_watcher;
-mod remote_memory;
-mod shell_locator;
-mod startup;
-mod types;
-mod wait_drive;
-
 use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use i18n::{t, t_args};
-use types::{DesktopProfile, Resolution};
+use desktoporz::{
+    config, hide_icons, i18n, layout, process_watcher, shell_locator, startup, wait_drive,
+};
+use desktoporz::i18n::{t, t_args};
+use desktoporz::types::{DesktopProfile, Resolution};
 
 const PROFILES_DIR: &str = "profiles";
 
@@ -183,6 +176,20 @@ fn run(args: &[String]) -> Result<String, String> {
             Some("status") | None => wait_drive::status(),
             Some("run") => wait_drive_run(),
             Some(_) => Err(t("wait_drive.usage")),
+        },
+        Some("hide-icons") => match args.get(1).map(String::as_str) {
+            Some("on") => {
+                let segundos: u64 = args
+                    .get(2)
+                    .and_then(|v| v.parse().ok())
+                    .filter(|s| *s > 0)
+                    .ok_or_else(|| t("hide_icons.usage"))?;
+                hide_icons::enable(segundos)
+            }
+            Some("off") => hide_icons::disable(),
+            Some("status") | None => hide_icons::status(),
+            Some("run") => hide_icons::run(),
+            Some(_) => Err(t("hide_icons.usage")),
         },
         Some("help") | Some("--help") | Some("-h") | None => Ok(help_text()),
         Some(outro) => Err(t_args(

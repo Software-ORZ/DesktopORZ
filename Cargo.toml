@@ -16,6 +16,10 @@ include = [
 name = "DesktopORZ"
 path = "src/main.rs"
 
+[[bin]]
+name = "DesktopORZ-HideIcons"
+path = "src/bin/hide_icons_daemon.rs"
+
 [dependencies]
 windows = { version = "0.58", features = [
     "Win32_UI_WindowsAndMessaging",
