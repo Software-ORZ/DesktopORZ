@@ -18,6 +18,7 @@ use std::env;
 use std::path::PathBuf;
 
 use crate::config::{self, StartupMirror};
+use crate::hide_icons;
 use crate::i18n::{t, t_args};
 
 use windows::core::w;
@@ -100,6 +101,12 @@ pub fn enable(profile: &str) -> Result<String, String> {
         profile: Some(profile.to_string()),
         command: Some(command),
     }));
+    // Se o ocultar-ícones estiver ativado, garante que o monitor também
+    // inicie junto com o sistema (entrada Run própria + spawn imediato).
+    if hide_icons::load_config().enabled {
+        let _ = hide_icons::ensure_run_entry();
+        hide_icons::spawn_daemon();
+    }
     Ok(t_args(
         "startup.enable_success",
         &[("profile", profile), ("path", &exe.display().to_string())],

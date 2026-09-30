@@ -114,6 +114,11 @@ fn run(args: &[String]) -> Result<String, String> {
             let profile = load_profile(&name)?;
             let _ = shell_locator::refresh_desktop();
             let moved = layout::restore_layout(&profile).map_err(|e| format!("{e}"))?;
+            // Rede de segurança: se este `restore` veio do login (entrada
+            // desk0k), o monitor de ocultar-ícones sobe junto, quando ativo.
+            if hide_icons::load_config().enabled {
+                hide_icons::spawn_daemon();
+            }
             Ok(t_args(
                 "restore.success",
                 &[

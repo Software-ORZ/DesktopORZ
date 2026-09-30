@@ -1,6 +1,6 @@
 [package]
 name = "desktoporz"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2021"
 description = "Open source DesktopOK clone: save and restore Windows desktop icon layouts"
 license = "MIT"

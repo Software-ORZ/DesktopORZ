@@ -186,6 +186,8 @@ fn daemon_path() -> Result<PathBuf, String> {
         .join("DesktopORZ-HideIcons.exe"))
 }
 
+pub const DAEMON_EXE_NAME: &str = "DesktopORZ-HideIcons.exe";
+
 fn register_run_entry() -> Result<(), String> {
     let exe = daemon_path()?;
     let cmd = format!("\"{}\"", exe.display());
@@ -238,6 +240,30 @@ pub fn load_config() -> HideIconsConfig {
     config
 }
 
+/// Regrava a entrada Run do daemon (idempotente). Chamada pelo `enable`
+/// e também pelo `startup on`, para que o monitor acompanhe a inicialização
+/// do CLI quando estiver ativado.
+pub fn ensure_run_entry() -> Result<(), String> {
+    register_run_entry()
+}
+
+/// Inicia o monitor imediatamente (detached), sem esperar o próximo login.
+/// Não faz nada se uma instância já estiver em execução.
+pub fn spawn_daemon() {
+    if crate::process_watcher::is_process_running(DAEMON_EXE_NAME) {
+        return;
+    }
+    if let Ok(daemon) = daemon_path() {
+        if daemon.exists() {
+            let _ = std::process::Command::new(daemon)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+        }
+    }
+}
+
 pub fn enable(timeout_secs: u64) -> Result<String, String> {
     if timeout_secs == 0 {
         return Err(t("hide_icons.timeout_zero"));
@@ -255,17 +281,7 @@ pub fn enable(timeout_secs: u64) -> Result<String, String> {
         enabled: true,
         timeout_secs: Some(timeout_secs),
     }));
-    // Inicia o monitor imediatamente (detached), sem esperar o próximo login.
-    // Erros de spawn não impedem a ativação: a chave Run já cobre o login.
-    if let Ok(daemon) = daemon_path() {
-        if daemon.exists() {
-            let _ = std::process::Command::new(daemon)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn();
-        }
-    }
+    spawn_daemon();
     Ok(t_args(
         "hide_icons.enable_success",
         &[("seconds", &timeout_secs.to_string())],
