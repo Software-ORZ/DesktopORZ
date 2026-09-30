@@ -21,4 +21,39 @@ fn main() {
             fs::copy(&path, &dest).unwrap_or_else(|e| panic!("falha ao copiar {}: {e}", path.display()));
         }
     }
+
+    embed_version_info();
+}
+
+/// Embute um recurso VERSIONINFO nos executáveis do pacote
+/// (DesktopORZ.exe e DesktopORZ-HideIcons.exe). Metadados de versão
+/// ajudam a reduzir falsos positivos de antivírus, que penalizam
+/// binários sem CompanyName/FileDescription e de publisher desconhecido.
+fn embed_version_info() {
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
+
+    let version = env::var("CARGO_PKG_VERSION").unwrap();
+    let mut parts = version.split('.').filter_map(|p| p.parse::<u64>().ok());
+    let packed = (parts.next().unwrap_or(0) << 48)
+        | (parts.next().unwrap_or(0) << 32)
+        | (parts.next().unwrap_or(0) << 16)
+        | parts.next().unwrap_or(0);
+
+    let mut res = winresource::WindowsResource::new();
+    res.set("CompanyName", "ThainanViniciusKatchan")
+        .set("ProductName", &env::var("CARGO_PKG_NAME").unwrap())
+        .set("FileDescription", &env::var("CARGO_PKG_DESCRIPTION").unwrap())
+        .set("InternalName", "DesktopORZ")
+        .set("OriginalFilename", "DesktopORZ")
+        .set("LegalCopyright", "Copyright (C) 2026 ThainanViniciusKatchan")
+        .set_version_info(winresource::VersionInfo::FILEVERSION, packed)
+        .set_version_info(winresource::VersionInfo::PRODUCTVERSION, packed);
+
+    // Erros do compilador de recursos (rc.exe/windres ausente) não devem
+    // derrubar o build inteiro: emite aviso e segue sem os metadados.
+    if let Err(e) = res.compile() {
+        println!("cargo:warning=falha ao embutir VERSIONINFO (metadados ignorados): {e}");
+    }
 }
