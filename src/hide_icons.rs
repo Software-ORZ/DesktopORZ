@@ -16,7 +16,8 @@
 
 use std::env;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use crate::config::{self, HideIconsMirror};
 use crate::i18n::{t, t_args};
@@ -28,14 +29,22 @@ use windows::Win32::System::Registry::{
     RegSetValueExW, HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_CREATE_KEY_DISPOSITION,
     REG_DWORD, REG_OPTION_NON_VOLATILE, REG_SAM_FLAGS, REG_SZ,
 };
-use windows::Win32::Foundation::POINT;
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON};
-use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, IsWindowVisible, ShowWindow, SW_HIDE, SW_SHOW};
+use windows::Win32::Foundation::{HMODULE, LPARAM, LRESULT, WPARAM};
+use windows::Win32::System::LibraryLoader::{
+    GetModuleHandleExW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+    GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    CallNextHookEx, DispatchMessageW, IsWindowVisible, PeekMessageW, SetWindowsHookExW,
+    ShowWindow, TranslateMessage, UnhookWindowsHookEx, HHOOK, MSG, PM_REMOVE, SW_HIDE,
+    SW_SHOW, WH_KEYBOARD_LL, WH_MOUSE_LL,
+};
 
 const APP_KEY: windows::core::PCWSTR = w!("Software\\DesktopORZ");
 const RUN_KEY: windows::core::PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
 const VALUE_ENABLED: windows::core::PCWSTR = w!("HideIconsEnabled");
 const VALUE_TIMEOUT: windows::core::PCWSTR = w!("HideIconsTimeout");
+const VALUE_INPUTS: windows::core::PCWSTR = w!("HideIconsInputs");
 const RUN_VALUE_NAME: windows::core::PCWSTR = w!("DesktopORZ-HideIcons");
 
 /// Intervalo de varredura do loop: 500ms mantém a CPU praticamente em zero
@@ -48,6 +57,84 @@ const DEFAULT_TIMEOUT_SECS: u64 = 5;
 pub struct HideIconsConfig {
     pub enabled: bool,
     pub timeout_secs: u64,
+    pub inputs: InputSource,
+}
+
+/// Fonte(s) de atividade que restauram os ícones e zeram o contador de
+/// inatividade: mouse, teclado ou ambos (padrão).
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum InputSource {
+    Mouse,
+    Keyboard,
+    #[default]
+    Both,
+}
+
+impl InputSource {
+    const BIT_MOUSE: u32 = 1;
+    const BIT_KEYBOARD: u32 = 2;
+
+    /// Regra de fallback da CLI: nenhuma flag ou ambas → `Both`; apenas uma
+    /// → fonte exclusiva.
+    pub fn from_flags(keyboard: bool, mouse: bool) -> Self {
+        match (keyboard, mouse) {
+            (true, false) => Self::Keyboard,
+            (false, true) => Self::Mouse,
+            _ => Self::Both,
+        }
+    }
+
+    /// Lê as flags `--kb`/`--keyboard` e `--mou`/`--mouse` dos argumentos
+    /// recebidos pelo daemon na linha de comando.
+    pub fn from_args(args: &[String]) -> Self {
+        let keyboard = args.iter().any(|a| a == "--kb" || a == "--keyboard");
+        let mouse = args.iter().any(|a| a == "--mou" || a == "--mouse");
+        Self::from_flags(keyboard, mouse)
+    }
+
+    pub fn from_bits(bits: u32) -> Self {
+        Self::from_flags(
+            bits & Self::BIT_KEYBOARD != 0,
+            bits & Self::BIT_MOUSE != 0,
+        )
+    }
+
+    pub fn bits(self) -> u32 {
+        let mut bits = 0;
+        if self.watches_mouse() {
+            bits |= Self::BIT_MOUSE;
+        }
+        if self.watches_keyboard() {
+            bits |= Self::BIT_KEYBOARD;
+        }
+        bits
+    }
+
+    pub fn watches_mouse(self) -> bool {
+        matches!(self, Self::Mouse | Self::Both)
+    }
+
+    pub fn watches_keyboard(self) -> bool {
+        matches!(self, Self::Keyboard | Self::Both)
+    }
+
+    /// Texto das flags a repassar na linha de comando do daemon desacoplado.
+    pub fn flags(self) -> &'static str {
+        match self {
+            Self::Mouse => "--mou",
+            Self::Keyboard => "--kb",
+            Self::Both => "--kb --mou",
+        }
+    }
+
+    /// Chave i18n que nomeia a fonte ativa (usada pelo `status`).
+    pub fn i18n_key(self) -> &'static str {
+        match self {
+            Self::Mouse => "hide_icons.source_mouse",
+            Self::Keyboard => "hide_icons.source_keyboard",
+            Self::Both => "hide_icons.source_both",
+        }
+    }
 }
 
 fn exe_path() -> Result<PathBuf, String> {
@@ -188,9 +275,9 @@ fn daemon_path() -> Result<PathBuf, String> {
 
 pub const DAEMON_EXE_NAME: &str = "DesktopORZ-HideIcons.exe";
 
-fn register_run_entry() -> Result<(), String> {
+fn register_run_entry(inputs: InputSource) -> Result<(), String> {
     let exe = daemon_path()?;
-    let cmd = format!("\"{}\"", exe.display());
+    let cmd = format!("\"{}\" {}", exe.display(), inputs.flags());
     unsafe {
         let key = open_key(HKEY_CURRENT_USER, RUN_KEY, KEY_SET_VALUE)?;
         let result = set_sz(key, RUN_VALUE_NAME, &cmd);
@@ -214,6 +301,7 @@ pub fn load_config() -> HideIconsConfig {
         return HideIconsConfig {
             enabled: mirror.enabled,
             timeout_secs: mirror.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS),
+            inputs: mirror.inputs.map(InputSource::from_bits).unwrap_or_default(),
         };
     }
     // Sem espelho: cai no registro e autopopula o config.json.
@@ -228,6 +316,9 @@ pub fn load_config() -> HideIconsConfig {
                 config.timeout_secs = v as u64;
             }
         }
+        if let Some(v) = query_dword(key, VALUE_INPUTS) {
+            config.inputs = InputSource::from_bits(v);
+        }
         unsafe {
             let _ = RegCloseKey(key);
         }
@@ -235,6 +326,7 @@ pub fn load_config() -> HideIconsConfig {
         config::set_hide_icons(Some(HideIconsMirror {
             enabled: config.enabled,
             timeout_secs: Some(config.timeout_secs),
+            inputs: Some(config.inputs.bits()),
         }));
     }
     config
@@ -244,7 +336,7 @@ pub fn load_config() -> HideIconsConfig {
 /// e também pelo `startup on`, para que o monitor acompanhe a inicialização
 /// do CLI quando estiver ativado.
 pub fn ensure_run_entry() -> Result<(), String> {
-    register_run_entry()
+    register_run_entry(load_config().inputs)
 }
 
 /// Inicia o monitor imediatamente (detached), sem esperar o próximo login.
@@ -256,6 +348,7 @@ pub fn spawn_daemon() {
     if let Ok(daemon) = daemon_path() {
         if daemon.exists() {
             let _ = std::process::Command::new(daemon)
+                .args(load_config().inputs.flags().split(' '))
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
@@ -264,22 +357,24 @@ pub fn spawn_daemon() {
     }
 }
 
-pub fn enable(timeout_secs: u64) -> Result<String, String> {
+pub fn enable(timeout_secs: u64, inputs: InputSource) -> Result<String, String> {
     if timeout_secs == 0 {
         return Err(t("hide_icons.timeout_zero"));
     }
     let key = open_app_key(KEY_SET_VALUE)?;
     let result = set_dword(key, VALUE_ENABLED, 1)
-        .and_then(|_| set_dword(key, VALUE_TIMEOUT, timeout_secs as u32));
+        .and_then(|_| set_dword(key, VALUE_TIMEOUT, timeout_secs as u32))
+        .and_then(|_| set_dword(key, VALUE_INPUTS, inputs.bits()));
     unsafe {
         let _ = RegCloseKey(key);
     }
     result?;
-    register_run_entry()?;
+    register_run_entry(inputs)?;
     // Espelha a configuração no config.json (o registro continua a fonte real).
     config::set_hide_icons(Some(HideIconsMirror {
         enabled: true,
         timeout_secs: Some(timeout_secs),
+        inputs: Some(inputs.bits()),
     }));
     spawn_daemon();
     Ok(t_args(
@@ -292,6 +387,7 @@ pub fn disable() -> Result<String, String> {
     let key = open_app_key(KEY_SET_VALUE)?;
     delete_value(key, VALUE_ENABLED);
     delete_value(key, VALUE_TIMEOUT);
+    delete_value(key, VALUE_INPUTS);
     unsafe {
         let _ = RegCloseKey(key);
     }
@@ -299,6 +395,7 @@ pub fn disable() -> Result<String, String> {
     config::set_hide_icons(Some(HideIconsMirror {
         enabled: false,
         timeout_secs: None,
+        inputs: None,
     }));
     Ok(t("hide_icons.disabled"))
 }
@@ -310,7 +407,10 @@ pub fn status() -> Result<String, String> {
     }
     Ok(t_args(
         "hide_icons.status_enabled",
-        &[("seconds", &config.timeout_secs.to_string())],
+        &[
+            ("seconds", &config.timeout_secs.to_string()),
+            ("source", &t(config.inputs.i18n_key())),
+        ],
     ))
 }
 
@@ -327,24 +427,6 @@ fn is_enabled_in_registry() -> bool {
     false
 }
 
-/// Detecta atividade vinda **somente do mouse** desde o ciclo anterior:
-/// movimento do cursor (`GetCursorPos`) ou clique pressionado agora
-/// (`GetAsyncKeyState` nos botões esquerdo/direito/meio — cobre cliques com
-/// o cursor parado). Teclado é ignorado de propósito.
-fn mouse_activity(prev_pos: &mut POINT) -> bool {
-    unsafe {
-        let mut pos = POINT::default();
-        let moved = GetCursorPos(&mut pos).is_ok() && pos != *prev_pos;
-        *prev_pos = pos;
-
-        let clicked = [VK_LBUTTON, VK_RBUTTON, VK_MBUTTON]
-            .iter()
-            .any(|&vk| (GetAsyncKeyState(vk.0 as i32) as u16) & 0x8000 != 0);
-
-        moved || clicked
-    }
-}
-
 /// Altera a visibilidade dos ícones apenas quando o estado realmente muda,
 /// evitando chamadas redundantes à API.
 fn set_icons_visible(visible: bool) {
@@ -358,12 +440,88 @@ fn set_icons_visible(visible: bool) {
     }
 }
 
+/// Timestamp (em ms) da última atividade detectada pelos hooks. Atômico
+/// porque é gravado pelos callbacks e lido pelo loop de monitoramento.
+static LAST_ACTIVITY_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Relógio monotônico em ms, ancorado em `Instant` no primeiro uso: evita
+/// depender do relógio de parede (que pode retroceder com ajustes de hora).
+fn now_ms() -> u64 {
+    use std::sync::OnceLock;
+    use std::time::Instant;
+    static EPOCH: OnceLock<(Instant, u64)> = OnceLock::new();
+    let (instant, wall_ms) = EPOCH.get_or_init(|| {
+        let wall = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        (Instant::now(), wall)
+    });
+    wall_ms + instant.elapsed().as_millis() as u64
+}
+
+/// Callback comum aos hooks `WH_MOUSE_LL` e `WH_KEYBOARD_LL`: apenas rearma
+/// o timestamp de atividade e passa o evento adiante (nunca bloqueia input).
+unsafe extern "system" fn input_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if code >= 0 {
+        LAST_ACTIVITY_MS.store(now_ms(), Ordering::Relaxed);
+    }
+    CallNextHookEx(None, code, wparam, lparam)
+}
+
+/// Logger mínimo do daemon: como ele roda sem console (subsistema Windows),
+/// erros e transições são registrados em `hide-icons-daemon.log` ao lado
+/// do executável, para diagnóstico. Falhas de escrita são ignoradas.
+fn daemon_log(message: &str) {
+    use std::io::Write;
+    if let Ok(path) = exe_path() {
+        let log = path
+            .parent()
+            .map(|p| p.join("hide-icons-daemon.log"))
+            .unwrap_or_else(|| PathBuf::from("hide-icons-daemon.log"));
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log)
+        {
+            use std::time::SystemTime;
+            let secs = SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let _ = writeln!(file, "[{secs}] {message}");
+        }
+    }
+}
+
+/// Handle do módulo atual (exe) ancorado no endereço do callback: hooks LL
+/// globais exigem um módulo válido contendo o procedimento em alguns
+/// cenários; passar `None` pode falhar silenciosamente.
+fn own_module_handle() -> HMODULE {
+    unsafe {
+        let mut hmod = HMODULE::default();
+        let _ = GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            windows::core::PCWSTR(input_hook as *const () as usize as *const u16),
+            &mut hmod,
+        );
+        hmod
+    }
+}
+
+fn install_hook(id: windows::Win32::UI::WindowsAndMessaging::WINDOWS_HOOK_ID) -> Result<HHOOK, String> {
+    let hmod = own_module_handle();
+    unsafe { SetWindowsHookExW(id, Some(input_hook), hmod, 0) }.map_err(|e| format!("{e}"))
+}
+
 /// Loop de monitoramento (comando interno `hide-icons run`).
 ///
-/// Estratégia: a cada varredura (~500ms) verifica atividade **exclusiva do
-/// mouse** (movimento do cursor ou clique). Um `Instant` local mede há
-/// quanto tempo não há atividade. Teclado não interfere.
-pub fn run() -> Result<String, String> {
+/// Estratégia: instala hooks globais de baixo nível (`WH_MOUSE_LL` e/ou
+/// `WH_KEYBOARD_LL`) conforme `source`. Os callbacks rearmam o timestamp de
+/// atividade; o thread mantém um mini loop de mensagens (`PeekMessageW`,
+/// obrigatório para o sistema entregar os hooks) e, a cada ~500ms, mede a
+/// ociosidade e alterna a visibilidade dos ícones.
+pub fn run(source: InputSource) -> Result<String, String> {
     let config = load_config();
     if !config.enabled {
         return Err(t("hide_icons.disabled_error"));
@@ -371,31 +529,94 @@ pub fn run() -> Result<String, String> {
 
     let timeout = Duration::from_secs(config.timeout_secs);
     let mut icons_hidden = false;
-    let mut last_pos = POINT::default();
     // Começa contando a ociosidade de agora (instante do login/execução).
-    let mut idle_since = Instant::now();
+    LAST_ACTIVITY_MS.store(now_ms(), Ordering::Relaxed);
 
+    daemon_log(&format!(
+        "iniciado: timeout={}s, fontes={} (bits={})",
+        config.timeout_secs,
+        source.flags(),
+        source.bits()
+    ));
+
+    let mouse_hook = match source.watches_mouse() {
+        true => match install_hook(WH_MOUSE_LL) {
+            Ok(h) => Some(h),
+            Err(e) => {
+                daemon_log(&format!("falha ao instalar WH_MOUSE_LL: {e}"));
+                return Err(e);
+            }
+        },
+        false => None,
+    };
+    let keyboard_hook = match source.watches_keyboard() {
+        true => match install_hook(WH_KEYBOARD_LL) {
+            Ok(h) => Some(h),
+            Err(e) => {
+                daemon_log(&format!("falha ao instalar WH_KEYBOARD_LL: {e}"));
+                // Não deixa o hook de mouse órfão se o de teclado falhar.
+                if let Some(h) = mouse_hook {
+                    unsafe {
+                        let _ = UnhookWindowsHookEx(h);
+                    }
+                }
+                return Err(e);
+            }
+        },
+        false => None,
+    };
+    daemon_log("hooks instalados com sucesso");
+
+    let result = monitor_loop(timeout, &mut icons_hidden);
+    daemon_log(&format!("encerrando: {result:?}"));
+
+    // Libera os hooks antes de retornar (sucesso ou erro).
+    for hook in [mouse_hook, keyboard_hook].into_iter().flatten() {
+        unsafe {
+            let _ = UnhookWindowsHookEx(hook);
+        }
+    }
+    result
+}
+
+fn monitor_loop(timeout: Duration, icons_hidden: &mut bool) -> Result<String, String> {
+    let mut msg = MSG::default();
     loop {
-        std::thread::sleep(POLL_INTERVAL);
+        // Drena a fila de mensagens: sem isso os hooks LL não são entregues.
+        unsafe {
+            while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
 
         // Se foi desativado pelo comando `off`, reexibe os ícones e encerra.
         if !is_enabled_in_registry() {
-            if icons_hidden {
+            if *icons_hidden {
                 set_icons_visible(true);
             }
             return Ok(t("hide_icons.run_stopped"));
         }
 
-        if mouse_activity(&mut last_pos) {
-            // Houve atividade de mouse: zera o contador e reexibe os ícones.
-            idle_since = Instant::now();
-            if icons_hidden {
+        let idle_for = Duration::from_millis(
+            now_ms().saturating_sub(LAST_ACTIVITY_MS.load(Ordering::Relaxed)),
+        );
+        let just_active = idle_for < POLL_INTERVAL;
+
+        if just_active {
+            // Houve atividade: reexibe os ícones (se ocultos).
+            if *icons_hidden {
                 set_icons_visible(true);
-                icons_hidden = false;
+                *icons_hidden = false;
+                daemon_log("atividade detectada: ícones restaurados");
             }
-        } else if !icons_hidden && idle_since.elapsed() >= timeout {
+        } else if !*icons_hidden && idle_for >= timeout {
             set_icons_visible(false);
-            icons_hidden = true;
+            *icons_hidden = true;
+            daemon_log("inatividade atingiu o timeout: ícones ocultados");
         }
+
+
+        std::thread::sleep(POLL_INTERVAL);
     }
 }

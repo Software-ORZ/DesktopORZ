@@ -48,6 +48,9 @@ pub struct HideIconsMirror {
     pub enabled: bool,
     #[serde(default)]
     pub timeout_secs: Option<u64>,
+    /// Bitmask da fonte de atividade (bit0 = mouse, bit1 = teclado; 3 = ambos).
+    #[serde(default)]
+    pub inputs: Option<u32>,
 }
 
 /// Espelho da configuração do wait-drive (source of truth: registro).

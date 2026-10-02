@@ -184,16 +184,21 @@ fn run(args: &[String]) -> Result<String, String> {
         },
         Some("hide-icons") => match args.get(1).map(String::as_str) {
             Some("on") => {
-                let segundos: u64 = args
-                    .get(2)
-                    .and_then(|v| v.parse().ok())
+                // Timeout = primeiro argumento numérico após `on`; as flags
+                // --kb/--keyboard e --mou/--mouse escolhem a fonte de
+                // atividade (sem flag ou com as duas → ambas).
+                let segundos: u64 = args[2..]
+                    .iter()
+                    .filter(|a| !a.starts_with("--"))
+                    .find_map(|v| v.parse().ok())
                     .filter(|s| *s > 0)
                     .ok_or_else(|| t("hide_icons.usage"))?;
-                hide_icons::enable(segundos)
+                let source = input_source_arg(args)?;
+                hide_icons::enable(segundos, source)
             }
             Some("off") => hide_icons::disable(),
             Some("status") | None => hide_icons::status(),
-            Some("run") => hide_icons::run(),
+            Some("run") => hide_icons::run(input_source_arg(args)?),
             Some(_) => Err(t("hide_icons.usage")),
         },
         Some("help") | Some("--help") | Some("-h") | None => Ok(help_text()),
@@ -233,6 +238,15 @@ fn exe_dir() -> PathBuf {
 
 fn help_text() -> String {
     t("help.text")
+}
+
+/// Flags opcionais do `hide-icons on`: `--kb`/`--keyboard` e
+/// `--mou`/`--mouse`. Sem nenhuma (ou com as duas) ativa ambas as fontes.
+fn input_source_arg(args: &[String]) -> Result<hide_icons::InputSource, String> {
+    Ok(hide_icons::InputSource::from_flags(
+        args.iter().any(|a| a == "--kb" || a == "--keyboard"),
+        args.iter().any(|a| a == "--mou" || a == "--mouse"),
+    ))
 }
 
 fn timeout_arg(args: &[String]) -> Result<Option<std::time::Duration>, String> {

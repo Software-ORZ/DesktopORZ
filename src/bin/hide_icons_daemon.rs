@@ -21,7 +21,11 @@
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    match desktoporz::hide_icons::run() {
+    // As flags --kb/--keyboard e --mou/--mouse chegam na linha de comando
+    // (da entrada Run ou do spawn do CLI); sem flags, o fallback é ambos.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let source = desktoporz::hide_icons::InputSource::from_args(&args);
+    match desktoporz::hide_icons::run(source) {
         Ok(_) => ExitCode::SUCCESS,
         Err(_) => ExitCode::FAILURE,
     }
