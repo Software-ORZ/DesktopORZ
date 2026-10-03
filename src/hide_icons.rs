@@ -34,10 +34,12 @@ use windows::Win32::System::LibraryLoader::{
     GetModuleHandleExW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
     GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
 };
+use windows::Win32::Foundation::WAIT_EVENT;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, DispatchMessageW, IsWindowVisible, PeekMessageW, SetWindowsHookExW,
-    ShowWindow, TranslateMessage, UnhookWindowsHookEx, HHOOK, MSG, PM_REMOVE, SW_HIDE,
-    SW_SHOW, WH_KEYBOARD_LL, WH_MOUSE_LL,
+    CallNextHookEx, DispatchMessageW, IsWindowVisible, MsgWaitForMultipleObjectsEx,
+    PeekMessageW, SetWindowsHookExW, ShowWindow, TranslateMessage, UnhookWindowsHookEx,
+    HHOOK, MSG, MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT, SW_HIDE, SW_SHOW,
+    WH_KEYBOARD_LL, WH_MOUSE_LL,
 };
 
 const APP_KEY: windows::core::PCWSTR = w!("Software\\DesktopORZ");
@@ -581,14 +583,59 @@ pub fn run(source: InputSource) -> Result<String, String> {
 
 fn monitor_loop(timeout: Duration, icons_hidden: &mut bool) -> Result<String, String> {
     let mut msg = MSG::default();
+    // Momento da última checagem de ociosidade: garante a cadência de
+    // ~POLL_INTERVAL mesmo quando o loop acorda várias vezes seguidas por
+    // eventos de input, evitando varreduras no registro a cada mensagem.
+    let mut last_check_ms = 0u64;
     loop {
+        // Espera bloqueante: o thread fica suspenso (CPU ~0%) mas acorda
+        // IMEDIATAMENTE quando o sistema entrega uma notificação de hook LL.
+        // Um `thread::sleep` aqui retém o input global por até meio segundo,
+        // pois hooks WH_MOUSE_LL/WH_KEYBOARD_LL são despachados pela fila de
+        // mensagens deste thread — foi a causa do sistema "travar".
+        unsafe {
+            let wait = MsgWaitForMultipleObjectsEx(
+                None,
+                POLL_INTERVAL.as_millis() as u32,
+                QS_ALLINPUT,
+                MWMO_INPUTAVAILABLE,
+            );
+            if wait == WAIT_EVENT(u32::MAX /* WAIT_FAILED */) {
+                let e = windows::core::Error::from_win32();
+                daemon_log(&format!("MsgWaitForMultipleObjectsEx falhou: {e}"));
+                return Err(format!("{e}"));
+            }
+            // wake por mensagem (WAIT_OBJECT_0..+n) ou por timeout: ambos
+            // caem no dreno da fila + checagem de ociosidade abaixo.
+        }
+
         // Drena a fila de mensagens: sem isso os hooks LL não são entregues.
+        // WM_QUIT encerra o loop de forma limpa.
+        let mut quit = false;
         unsafe {
             while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                if msg.message == windows::Win32::UI::WindowsAndMessaging::WM_QUIT {
+                    quit = true;
+                    break;
+                }
                 let _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }
         }
+        if quit {
+            if *icons_hidden {
+                set_icons_visible(true);
+            }
+            return Ok(t("hide_icons.run_stopped"));
+        }
+
+        // Checagem de ociosidade apenas na cadência do POLL_INTERVAL; eventos
+        // frequentes de input não fazem o loop consultar o registro toda hora.
+        let now = now_ms();
+        if now.saturating_sub(last_check_ms) < POLL_INTERVAL.as_millis() as u64 {
+            continue;
+        }
+        last_check_ms = now;
 
         // Se foi desativado pelo comando `off`, reexibe os ícones e encerra.
         if !is_enabled_in_registry() {
@@ -599,7 +646,7 @@ fn monitor_loop(timeout: Duration, icons_hidden: &mut bool) -> Result<String, St
         }
 
         let idle_for = Duration::from_millis(
-            now_ms().saturating_sub(LAST_ACTIVITY_MS.load(Ordering::Relaxed)),
+            now.saturating_sub(LAST_ACTIVITY_MS.load(Ordering::Relaxed)),
         );
         let just_active = idle_for < POLL_INTERVAL;
 
@@ -615,8 +662,5 @@ fn monitor_loop(timeout: Duration, icons_hidden: &mut bool) -> Result<String, St
             *icons_hidden = true;
             daemon_log("inatividade atingiu o timeout: ícones ocultados");
         }
-
-
-        std::thread::sleep(POLL_INTERVAL);
     }
 }
