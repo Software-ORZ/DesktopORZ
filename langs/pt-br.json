@@ -64,7 +64,7 @@
     "timeout_off": "sem timeout"
   },
   "hide_icons": {
-    "usage": "Uso: hide-icons [on <segundos> [--kb] [--mou] | off | status]",
+    "usage": "Uso: hide-icons [on <segundos> [--kb] [--mou] [-include-taskbar] | off | status]",
     "source_mouse": "mouse",
     "source_keyboard": "teclado",
     "source_both": "teclado e mouse",
@@ -76,7 +76,8 @@
     "enable_success": "Ocultar ícones ativado: a área de trabalho será limpa após {seconds}s de inatividade.",
     "disabled": "Ocultar ícones desativado.",
     "status_disabled": "Ocultar ícones: desativado.",
-    "status_enabled": "Ocultar ícones: ativado. Oculta após {seconds}s de inatividade (restaura com {source}).",
+    "status_enabled": "Ocultar ícones: ativado. Oculta após {seconds}s de inatividade (restaura com {source}).{taskbar}",
+    "taskbar_included": " A barra de tarefas também será ocultada.",
     "run_stopped": "Monitoramento de ocultar ícones encerrado (desativado)."
   },
   "process_watcher": {
@@ -88,6 +89,6 @@
     "changed": "Idioma alterado para '{lang}'."
   },
   "help": {
-    "text": "DesktopORZ — gerenciador de layout de ícones da área de trabalho\n\nUso:\n  save <perfil>                     Salva o layout atual no perfil\n  save-res <perfil> [<L>x<A>]       Salva o layout para uma resolução específica\n  profile-update <perfil>           Atualiza o layout principal do perfil\n  restore <perfil>                  Restaura o layout do perfil\n  list                              Lista os perfis salvos\n  startup [on <perfil>|off|status]  Gerencia a inicialização automática\n  wait-drive [on <perfil> [--timeout <s>]|off|status]  Aguarda o Google Drive ao iniciar\n  hide-icons [on <s> [--kb] [--mou]|off|status]  Oculta os ícones após inatividade (KB=teclado, MOU=mouse)\n  lang [<sigla>]                    Mostra ou altera o idioma (ex.: lang en)\n  help                              Mostra esta ajuda"
+    "text": "DesktopORZ — gerenciador de layout de ícones da área de trabalho\n\nUso:\n  save <perfil>                     Salva o layout atual no perfil\n  save-res <perfil> [<L>x<A>]       Salva o layout para uma resolução específica\n  profile-update <perfil>           Atualiza o layout principal do perfil\n  restore <perfil>                  Restaura o layout do perfil\n  list                              Lista os perfis salvos\n  startup [on <perfil>|off|status]  Gerencia a inicialização automática\n  wait-drive [on <perfil> [--timeout <s>]|off|status]  Aguarda o Google Drive ao iniciar\n  hide-icons [on <s> [--kb] [--mou] [-taskbar]|off|status]  Oculta os ícones após inatividade (KB=teclado, MOU=mouse, barra de tarefas com -include-taskbar)\n  lang [<sigla>]                    Mostra ou altera o idioma (ex.: lang en)\n  help                              Mostra esta ajuda"
   }
 }

@@ -51,6 +51,9 @@ pub struct HideIconsMirror {
     /// Bitmask da fonte de atividade (bit0 = mouse, bit1 = teclado; 3 = ambos).
     #[serde(default)]
     pub inputs: Option<u32>,
+    /// Quando true, a barra de tarefas também é ocultada junto com os ícones.
+    #[serde(default)]
+    pub include_taskbar: Option<bool>,
 }
 
 /// Espelho da configuração do wait-drive (source of truth: registro).

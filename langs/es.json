@@ -64,7 +64,7 @@
     "timeout_off": "sin tiempo de espera"
   },
   "hide_icons": {
-    "usage": "Uso: hide-icons [on <segundos> [--kb] [--mou] | off | status]",
+    "usage": "Uso: hide-icons [on <segundos> [--kb] [--mou] [-include-taskbar] | off | status]",
     "source_mouse": "mouse",
     "source_keyboard": "teclado",
     "source_both": "teclado y mouse",
@@ -76,7 +76,8 @@
     "enable_success": "Ocultar iconos habilitado: el escritorio se limpiará tras {seconds} s de inactividad.",
     "disabled": "Ocultar iconos deshabilitado.",
     "status_disabled": "Ocultar iconos: deshabilitado.",
-    "status_enabled": "Ocultar iconos: habilitado. Oculta tras {seconds} s de inactividad (restaura con {source}).",
+    "status_enabled": "Ocultar iconos: habilitado. Oculta tras {seconds} s de inactividad (restaura con {source}).{taskbar}",
+    "taskbar_included": " La barra de tareas también se ocultará.",
     "run_stopped": "Monitoreo de ocultar iconos detenido (deshabilitado)."
   },
   "process_watcher": {
@@ -88,6 +89,6 @@
     "changed": "Idioma cambiado a '{lang}'."
   },
   "help": {
-    "text": "DesktopORZ — Gestor de diseño de iconos del escritorio\n\nUso:\n  save <perfil>                     Guarda el diseño actual en un perfil\n  save-res <perfil> [<ancho>x<alto>]  Guarda el diseño para una resolución específica\n  profile-update <perfil>           Actualiza el diseño principal del perfil\n  restore <perfil>                  Restaura el diseño del perfil\n  list                              Lista los perfiles guardados\n  startup [on <perfil>|off|status]  Gestiona el inicio automático\n  wait-drive [on <perfil> [--timeout <seg>]|off|status]  Espera a Google Drive al iniciar\n  hide-icons [on <seg> [--kb] [--mou]|off|status]  Oculta los iconos tras inactividad (KB=teclado, MOU=mouse)\n  lang [<código>]                   Muestra o cambia el idioma (ej.: lang es)\n  help                              Muestra esta ayuda"
+    "text": "DesktopORZ — Gestor de diseño de iconos del escritorio\n\nUso:\n  save <perfil>                     Guarda el diseño actual en un perfil\n  save-res <perfil> [<ancho>x<alto>]  Guarda el diseño para una resolución específica\n  profile-update <perfil>           Actualiza el diseño principal del perfil\n  restore <perfil>                  Restaura el diseño del perfil\n  list                              Lista los perfiles guardados\n  startup [on <perfil>|off|status]  Gestiona el inicio automático\n  wait-drive [on <perfil> [--timeout <seg>]|off|status]  Espera a Google Drive al iniciar\n  hide-icons [on <seg> [--kb] [--mou] [-taskbar]|off|status]  Oculta los iconos tras inactividad (KB=teclado, MOU=mouse, barra de tareas con -include-taskbar)\n  lang [<código>]                   Muestra o cambia el idioma (ej.: lang es)\n  help                              Muestra esta ayuda"
   }
 }

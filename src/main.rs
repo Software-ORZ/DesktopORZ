@@ -186,19 +186,21 @@ fn run(args: &[String]) -> Result<String, String> {
             Some("on") => {
                 // Timeout = primeiro argumento numérico após `on`; as flags
                 // --kb/--keyboard e --mou/--mouse escolhem a fonte de
-                // atividade (sem flag ou com as duas → ambas).
+                // atividade (sem flag ou com as duas → ambas); a flag
+                // -include-taskbar/--include-taskbar também oculta a barra
+                // de tarefas junto com os ícones.
                 let segundos: u64 = args[2..]
                     .iter()
-                    .filter(|a| !a.starts_with("--"))
+                    .filter(|a| !a.starts_with('-'))
                     .find_map(|v| v.parse().ok())
                     .filter(|s| *s > 0)
                     .ok_or_else(|| t("hide_icons.usage"))?;
                 let source = input_source_arg(args)?;
-                hide_icons::enable(segundos, source)
+                hide_icons::enable(segundos, source, include_taskbar_arg(args))
             }
             Some("off") => hide_icons::disable(),
             Some("status") | None => hide_icons::status(),
-            Some("run") => hide_icons::run(input_source_arg(args)?),
+            Some("run") => hide_icons::run(input_source_arg(args)?, include_taskbar_arg(args)),
             Some(_) => Err(t("hide_icons.usage")),
         },
         Some("help") | Some("--help") | Some("-h") | None => Ok(help_text()),
@@ -247,6 +249,13 @@ fn input_source_arg(args: &[String]) -> Result<hide_icons::InputSource, String> 
         args.iter().any(|a| a == "--kb" || a == "--keyboard"),
         args.iter().any(|a| a == "--mou" || a == "--mouse"),
     ))
+}
+
+/// Flag opcional do `hide-icons on`: `-include-taskbar`/`--include-taskbar`
+/// oculta também a barra de tarefas junto com os ícones (mesmo timeout e
+/// mesmas fontes de atividade).
+fn include_taskbar_arg(args: &[String]) -> bool {
+    hide_icons::include_taskbar_arg(args)
 }
 
 fn timeout_arg(args: &[String]) -> Result<Option<std::time::Duration>, String> {
