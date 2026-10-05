@@ -28,8 +28,7 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
 use windows::Win32::System::Threading::{
-    OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
-    PROCESS_QUERY_LIMITED_INFORMATION,
+    OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 
 /// Descrição de arquivo (FileDescription) do processo persistente do Google
@@ -89,8 +88,7 @@ fn file_description(exe_path: &[u16]) -> Option<String> {
         }
 
         let mut data = vec![0u8; size as usize];
-        GetFileVersionInfoW(path, dw_handle, size, data.as_mut_ptr() as *mut _)
-            .ok()?;
+        GetFileVersionInfoW(path, dw_handle, size, data.as_mut_ptr() as *mut _).ok()?;
 
         // Descobre lang/codepage declarados no bloco de tradução.
         let mut buf: *mut std::ffi::c_void = std::ptr::null_mut();
@@ -118,10 +116,8 @@ fn file_description(exe_path: &[u16]) -> Option<String> {
 
         for (lang, codepage) in translations {
             let sub_block = format!("\\StringFileInfo\\{lang:04x}{codepage:04x}\\FileDescription");
-            let sub_block_wide: Vec<u16> = sub_block
-                .encode_utf16()
-                .chain(std::iter::once(0))
-                .collect();
+            let sub_block_wide: Vec<u16> =
+                sub_block.encode_utf16().chain(std::iter::once(0)).collect();
             let mut value: *mut std::ffi::c_void = std::ptr::null_mut();
             let mut value_len = 0u32;
             if VerQueryValueW(
@@ -134,8 +130,10 @@ fn file_description(exe_path: &[u16]) -> Option<String> {
                 && !value.is_null()
                 && value_len > 0
             {
-                let chars =
-                    std::slice::from_raw_parts(value as *const u16, (value_len as usize).saturating_sub(1));
+                let chars = std::slice::from_raw_parts(
+                    value as *const u16,
+                    (value_len as usize).saturating_sub(1),
+                );
                 return Some(String::from_utf16_lossy(chars));
             }
         }
@@ -161,9 +159,11 @@ pub fn is_process_running_with_description(description: &str) -> bool {
         if Process32FirstW(snapshot, &mut entry).is_ok() {
             loop {
                 if entry.th32ProcessID != 0 {
-                    if let Ok(process) =
-                        OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, entry.th32ProcessID)
-                    {
+                    if let Ok(process) = OpenProcess(
+                        PROCESS_QUERY_LIMITED_INFORMATION,
+                        false,
+                        entry.th32ProcessID,
+                    ) {
                         let mut buffer = [0u16; 1024];
                         let mut size = buffer.len() as u32;
                         if QueryFullProcessImageNameW(

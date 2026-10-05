@@ -20,29 +20,26 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::config::{self, HideIconsMirror};
+use crate::cursor;
 use crate::i18n::{t, t_args};
 use crate::shell_locator;
 
 use windows::core::w;
-use windows::Win32::System::Registry::{
-    RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW,
-    RegSetValueExW, HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_CREATE_KEY_DISPOSITION,
-    REG_DWORD, REG_OPTION_NON_VOLATILE, REG_SAM_FLAGS, REG_SZ,
-};
-use windows::Win32::Foundation::{HMODULE, HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::WAIT_EVENT;
+use windows::Win32::Foundation::{HMODULE, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::{
     GetModuleHandleExW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
     GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
 };
-use windows::Win32::Foundation::WAIT_EVENT;
-use windows::Win32::UI::Shell::{
-    SHAppBarMessage, ABM_GETSTATE, ABM_SETSTATE, ABS_ALWAYSONTOP, ABS_AUTOHIDE, APPBARDATA,
+use windows::Win32::System::Registry::{
+    RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
+    HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_CREATE_KEY_DISPOSITION, REG_DWORD,
+    REG_OPTION_NON_VOLATILE, REG_SAM_FLAGS, REG_SZ,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, DispatchMessageW, FindWindowW, IsWindowVisible,
-    MsgWaitForMultipleObjectsEx, PeekMessageW, ShowWindow, TranslateMessage,
-    UnhookWindowsHookEx, HHOOK, MSG, MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT,
-    SW_HIDE, SW_SHOW, WH_KEYBOARD_LL, WH_MOUSE_LL, SetWindowsHookExW,
+    CallNextHookEx, DispatchMessageW, IsWindowVisible, MsgWaitForMultipleObjectsEx,
+    PeekMessageW, SetWindowsHookExW, ShowWindow, TranslateMessage, UnhookWindowsHookEx, HHOOK, MSG,
+    MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT, SW_HIDE, SW_SHOW, WH_KEYBOARD_LL, WH_MOUSE_LL,
 };
 
 const APP_KEY: windows::core::PCWSTR = w!("Software\\DesktopORZ");
@@ -50,7 +47,7 @@ const RUN_KEY: windows::core::PCWSTR = w!("Software\\Microsoft\\Windows\\Current
 const VALUE_ENABLED: windows::core::PCWSTR = w!("HideIconsEnabled");
 const VALUE_TIMEOUT: windows::core::PCWSTR = w!("HideIconsTimeout");
 const VALUE_INPUTS: windows::core::PCWSTR = w!("HideIconsInputs");
-const VALUE_TASKBAR: windows::core::PCWSTR = w!("HideIconsTaskbar");
+const VALUE_CURSOR: windows::core::PCWSTR = w!("HideIconsCursor");
 const RUN_VALUE_NAME: windows::core::PCWSTR = w!("DesktopORZ-HideIcons");
 
 /// Intervalo de varredura do loop: 500ms mantém a CPU praticamente em zero
@@ -64,16 +61,16 @@ pub struct HideIconsConfig {
     pub enabled: bool,
     pub timeout_secs: u64,
     pub inputs: InputSource,
-    /// Quando ativo, a barra de tarefas também é ocultada junto com os ícones
-    /// (via Auto-Hide nativo do shell, `ABM_SETSTATE`).
-    pub include_taskbar: bool,
+    /// Quando ativo, o cursor do mouse também é ocultado junto com os ícones
+    /// (cursor transparente via `SetSystemCursor`).
+    pub include_cursor: bool,
 }
 
-/// Lê a flag `-include-taskbar`/`--include-taskbar` dos argumentos recebidos
+/// Lê a flag `-include-cursor`/`--include-cursor` dos argumentos recebidos
 /// pelo daemon na linha de comando (entrada Run ou spawn do CLI).
-pub fn include_taskbar_arg(args: &[String]) -> bool {
+pub fn include_cursor_arg(args: &[String]) -> bool {
     args.iter()
-        .any(|a| a == "-include-taskbar" || a == "--include-taskbar")
+        .any(|a| a == "-include-cursor" || a == "--include-cursor")
 }
 
 /// Fonte(s) de atividade que restauram os ícones e zeram o contador de
@@ -109,10 +106,7 @@ impl InputSource {
     }
 
     pub fn from_bits(bits: u32) -> Self {
-        Self::from_flags(
-            bits & Self::BIT_KEYBOARD != 0,
-            bits & Self::BIT_MOUSE != 0,
-        )
+        Self::from_flags(bits & Self::BIT_KEYBOARD != 0, bits & Self::BIT_MOUSE != 0)
     }
 
     pub fn bits(self) -> u32 {
@@ -166,7 +160,11 @@ fn exe_path() -> Result<PathBuf, String> {
     Ok(p)
 }
 
-fn open_key(root: HKEY, subkey: windows::core::PCWSTR, access: REG_SAM_FLAGS) -> Result<HKEY, String> {
+fn open_key(
+    root: HKEY,
+    subkey: windows::core::PCWSTR,
+    access: REG_SAM_FLAGS,
+) -> Result<HKEY, String> {
     unsafe {
         let mut key = HKEY::default();
         let status = RegOpenKeyExW(root, subkey, 0, access, &mut key);
@@ -291,14 +289,14 @@ fn daemon_path() -> Result<PathBuf, String> {
 
 pub const DAEMON_EXE_NAME: &str = "DesktopORZ-HideIcons.exe";
 
-fn register_run_entry(inputs: InputSource, include_taskbar: bool) -> Result<(), String> {
+fn register_run_entry(inputs: InputSource, include_cursor: bool) -> Result<(), String> {
     let exe = daemon_path()?;
     let cmd = format!(
         "\"{}\" {}{}",
         exe.display(),
         inputs.flags(),
-        if include_taskbar {
-            " --include-taskbar"
+        if include_cursor {
+            " --include-cursor"
         } else {
             ""
         }
@@ -326,8 +324,11 @@ pub fn load_config() -> HideIconsConfig {
         return HideIconsConfig {
             enabled: mirror.enabled,
             timeout_secs: mirror.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS),
-            inputs: mirror.inputs.map(InputSource::from_bits).unwrap_or_default(),
-            include_taskbar: mirror.include_taskbar.unwrap_or(false),
+            inputs: mirror
+                .inputs
+                .map(InputSource::from_bits)
+                .unwrap_or_default(),
+            include_cursor: mirror.include_cursor.unwrap_or(false),
         };
     }
     // Sem espelho: cai no registro e autopopula o config.json.
@@ -336,7 +337,9 @@ pub fn load_config() -> HideIconsConfig {
         ..Default::default()
     };
     if let Ok(key) = open_app_key(KEY_QUERY_VALUE) {
-        config.enabled = query_dword(key, VALUE_ENABLED).map(|v| v != 0).unwrap_or(false);
+        config.enabled = query_dword(key, VALUE_ENABLED)
+            .map(|v| v != 0)
+            .unwrap_or(false);
         if let Some(v) = query_dword(key, VALUE_TIMEOUT) {
             if v > 0 {
                 config.timeout_secs = v as u64;
@@ -345,7 +348,9 @@ pub fn load_config() -> HideIconsConfig {
         if let Some(v) = query_dword(key, VALUE_INPUTS) {
             config.inputs = InputSource::from_bits(v);
         }
-        config.include_taskbar = query_dword(key, VALUE_TASKBAR).map(|v| v != 0).unwrap_or(false);
+        config.include_cursor = query_dword(key, VALUE_CURSOR)
+            .map(|v| v != 0)
+            .unwrap_or(false);
         unsafe {
             let _ = RegCloseKey(key);
         }
@@ -354,7 +359,7 @@ pub fn load_config() -> HideIconsConfig {
             enabled: config.enabled,
             timeout_secs: Some(config.timeout_secs),
             inputs: Some(config.inputs.bits()),
-            include_taskbar: Some(config.include_taskbar),
+            include_cursor: Some(config.include_cursor),
         }));
     }
     config
@@ -365,7 +370,7 @@ pub fn load_config() -> HideIconsConfig {
 /// do CLI quando estiver ativado.
 pub fn ensure_run_entry() -> Result<(), String> {
     let config = load_config();
-    register_run_entry(config.inputs, config.include_taskbar)
+    register_run_entry(config.inputs, config.include_cursor)
 }
 
 /// Inicia o monitor imediatamente (detached), sem esperar o próximo login.
@@ -379,8 +384,8 @@ pub fn spawn_daemon() {
             let config = load_config();
             let mut daemon_args: Vec<String> =
                 config.inputs.flags().split(' ').map(String::from).collect();
-            if config.include_taskbar {
-                daemon_args.push("--include-taskbar".to_string());
+            if config.include_cursor {
+                daemon_args.push("--include-cursor".to_string());
             }
             let _ = std::process::Command::new(daemon)
                 .args(daemon_args)
@@ -395,7 +400,7 @@ pub fn spawn_daemon() {
 pub fn enable(
     timeout_secs: u64,
     inputs: InputSource,
-    include_taskbar: bool,
+    include_cursor: bool,
 ) -> Result<String, String> {
     if timeout_secs == 0 {
         return Err(t("hide_icons.timeout_zero"));
@@ -404,18 +409,18 @@ pub fn enable(
     let result = set_dword(key, VALUE_ENABLED, 1)
         .and_then(|_| set_dword(key, VALUE_TIMEOUT, timeout_secs as u32))
         .and_then(|_| set_dword(key, VALUE_INPUTS, inputs.bits()))
-        .and_then(|_| set_dword(key, VALUE_TASKBAR, include_taskbar as u32));
+        .and_then(|_| set_dword(key, VALUE_CURSOR, include_cursor as u32));
     unsafe {
         let _ = RegCloseKey(key);
     }
     result?;
-    register_run_entry(inputs, include_taskbar)?;
+    register_run_entry(inputs, include_cursor)?;
     // Espelha a configuração no config.json (o registro continua a fonte real).
     config::set_hide_icons(Some(HideIconsMirror {
         enabled: true,
         timeout_secs: Some(timeout_secs),
         inputs: Some(inputs.bits()),
-        include_taskbar: Some(include_taskbar),
+        include_cursor: Some(include_cursor),
     }));
     spawn_daemon();
     Ok(t_args(
@@ -429,7 +434,7 @@ pub fn disable() -> Result<String, String> {
     delete_value(key, VALUE_ENABLED);
     delete_value(key, VALUE_TIMEOUT);
     delete_value(key, VALUE_INPUTS);
-    delete_value(key, VALUE_TASKBAR);
+    delete_value(key, VALUE_CURSOR);
     unsafe {
         let _ = RegCloseKey(key);
     }
@@ -438,7 +443,7 @@ pub fn disable() -> Result<String, String> {
         enabled: false,
         timeout_secs: None,
         inputs: None,
-        include_taskbar: None,
+        include_cursor: None,
     }));
     Ok(t("hide_icons.disabled"))
 }
@@ -454,9 +459,9 @@ pub fn status() -> Result<String, String> {
             ("seconds", &config.timeout_secs.to_string()),
             ("source", &t(config.inputs.i18n_key())),
             (
-                "taskbar",
-                &if config.include_taskbar {
-                    t("hide_icons.taskbar_included")
+                "cursor",
+                &if config.include_cursor {
+                    t("hide_icons.cursor_included")
                 } else {
                     String::new()
                 },
@@ -469,7 +474,9 @@ pub fn status() -> Result<String, String> {
 /// `run` a cada ciclo para responder ao comando `off` em tempo real.
 fn is_enabled_in_registry() -> bool {
     if let Ok(key) = open_app_key(KEY_QUERY_VALUE) {
-        let enabled = query_dword(key, VALUE_ENABLED).map(|v| v != 0).unwrap_or(false);
+        let enabled = query_dword(key, VALUE_ENABLED)
+            .map(|v| v != 0)
+            .unwrap_or(false);
         unsafe {
             let _ = RegCloseKey(key);
         }
@@ -489,84 +496,6 @@ fn set_icons_visible(visible: bool) {
             }
         }
     }
-}
-
-/// Estado da barra de tarefas para o loop de monitoramento: guarda se o
-/// auto-hide está ativo e o estado AppBar original do shell (`ABS_*`),
-/// capturado via `ABM_GETSTATE` antes da primeira ocultação.
-#[derive(Default)]
-pub struct TaskbarState {
-    hidden: bool,
-    /// Estado AppBar original (bitmask `ABS_AUTOHIDE` | `ABS_ALWAYSONTOP`).
-    saved_state: Option<u32>,
-}
-
-/// Monta o `APPBARDATA` apontando para a `Shell_TrayWnd` (barra principal).
-/// Retorna `None` se a barra não for encontrada (Explorer reiniciando, p.ex.).
-fn taskbar_appbar_data() -> Option<APPBARDATA> {
-    let hwnd = unsafe { FindWindowW(w!("Shell_TrayWnd"), None) }.ok()?;
-    if hwnd == HWND::default() {
-        return None;
-    }
-    Some(APPBARDATA {
-        cbSize: std::mem::size_of::<APPBARDATA>() as u32,
-        hWnd: hwnd,
-        ..Default::default()
-    })
-}
-
-/// Consulta o estado AppBar atual do shell (`ABM_GETSTATE`).
-fn get_appbar_state(data: &mut APPBARDATA) -> u32 {
-    unsafe { SHAppBarMessage(ABM_GETSTATE, data) as u32 }
-}
-
-/// Aplica um novo estado AppBar ao shell (`ABM_SETSTATE`). O próprio Shell/DWM
-/// recalcula a workarea e redimensiona janelas fluidamente, cuja gestão fica
-/// inteiramente nativa — sem `ShowWindow`, `SPI_SETWORKAREA` ou `EnumWindows`.
-fn set_appbar_state(data: &mut APPBARDATA, state: u32) {
-    data.lParam = LPARAM(state as isize);
-    unsafe {
-        SHAppBarMessage(ABM_SETSTATE, data);
-    }
-}
-
-/// Ativa o Auto-Hide nativo da barra de tarefas: salva o estado original na
-/// primeira chamada e aplica `ABS_AUTOHIDE | ABS_ALWAYSONTOP`. O cabo de
-/// guerra com o DWM do Windows 11 some porque o shell passa a orquestrar a
-/// ocultação (é o mesmo caminho da configuração em Personalização).
-fn hide_taskbar(state: &mut TaskbarState) {
-    if state.hidden {
-        return;
-    }
-    let Some(mut data) = taskbar_appbar_data() else {
-        daemon_log("Shell_TrayWnd não encontrada; auto-hide não aplicado");
-        return;
-    };
-    if state.saved_state.is_none() {
-        let original = get_appbar_state(&mut data);
-        state.saved_state = Some(original);
-        daemon_log(&format!("estado AppBar original salvo: {original:#x}"));
-    }
-    set_appbar_state(&mut data, ABS_AUTOHIDE | ABS_ALWAYSONTOP);
-    state.hidden = true;
-}
-
-/// Restaura a barra de tarefas reaplicando o estado AppBar original salvo
-/// (auto-hide ligado/desligado conforme estava antes do daemon intervir).
-fn restore_taskbar(state: &mut TaskbarState) {
-    if !state.hidden {
-        return;
-    }
-    let saved = state.saved_state.unwrap_or(0);
-    match taskbar_appbar_data() {
-        Some(mut data) => {
-            set_appbar_state(&mut data, saved);
-            daemon_log(&format!("estado AppBar restaurado: {saved:#x}"));
-        }
-        None => daemon_log("Shell_TrayWnd não encontrada ao restaurar"),
-    }
-    state.saved_state = None;
-    state.hidden = false;
 }
 
 /// Timestamp (em ms) da última atividade detectada pelos hooks. Atômico
@@ -589,11 +518,14 @@ fn now_ms() -> u64 {
     wall_ms + instant.elapsed().as_millis() as u64
 }
 
-/// Callback comum aos hooks `WH_MOUSE_LL` e `WH_KEYBOARD_LL`: apenas rearma
-/// o timestamp de atividade e passa o evento adiante (nunca bloqueia input).
+/// Callback comum aos hooks `WH_MOUSE_LL` e `WH_KEYBOARD_LL`: rearma o
+/// timestamp de atividade e passa o evento adiante (nunca bloqueia input).
+/// Se o cursor estiver oculto, restaura-o IMEDIATAMENTE (no-op atômico quando
+/// já visível), sem esperar a cadência de ~500ms do loop de monitoramento.
 unsafe extern "system" fn input_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code >= 0 {
         LAST_ACTIVITY_MS.store(now_ms(), Ordering::Relaxed);
+        cursor::restore_system_cursor();
     }
     CallNextHookEx(None, code, wparam, lparam)
 }
@@ -638,7 +570,9 @@ fn own_module_handle() -> HMODULE {
     }
 }
 
-fn install_hook(id: windows::Win32::UI::WindowsAndMessaging::WINDOWS_HOOK_ID) -> Result<HHOOK, String> {
+fn install_hook(
+    id: windows::Win32::UI::WindowsAndMessaging::WINDOWS_HOOK_ID,
+) -> Result<HHOOK, String> {
     let hmod = own_module_handle();
     unsafe { SetWindowsHookExW(id, Some(input_hook), hmod, 0) }.map_err(|e| format!("{e}"))
 }
@@ -650,7 +584,7 @@ fn install_hook(id: windows::Win32::UI::WindowsAndMessaging::WINDOWS_HOOK_ID) ->
 /// atividade; o thread mantém um mini loop de mensagens (`PeekMessageW`,
 /// obrigatório para o sistema entregar os hooks) e, a cada ~500ms, mede a
 /// ociosidade e alterna a visibilidade dos ícones.
-pub fn run(source: InputSource, include_taskbar: bool) -> Result<String, String> {
+pub fn run(source: InputSource, include_cursor: bool) -> Result<String, String> {
     let config = load_config();
     if !config.enabled {
         return Err(t("hide_icons.disabled_error"));
@@ -658,16 +592,20 @@ pub fn run(source: InputSource, include_taskbar: bool) -> Result<String, String>
 
     let timeout = Duration::from_secs(config.timeout_secs);
     let mut icons_hidden = false;
-    let mut taskbar = TaskbarState::default();
     // Começa contando a ociosidade de agora (instante do login/execução).
     LAST_ACTIVITY_MS.store(now_ms(), Ordering::Relaxed);
 
+    // Guarda RAII + tratador de console: restaura o cursor no fim do loop
+    // (sucesso, erro, panic/unwind ou Ctrl+C), nunca deixando o usuário
+    // sem ponteiro no Windows.
+    let _cursor_guard = cursor::SystemCursorGuard::install();
+
     daemon_log(&format!(
-        "iniciado: timeout={}s, fontes={} (bits={}), taskbar={}",
+        "iniciado: timeout={}s, fontes={} (bits={}), cursor={}",
         config.timeout_secs,
         source.flags(),
         source.bits(),
-        include_taskbar
+        include_cursor
     ));
 
     let mouse_hook = match source.watches_mouse() {
@@ -698,7 +636,9 @@ pub fn run(source: InputSource, include_taskbar: bool) -> Result<String, String>
     };
     daemon_log("hooks instalados com sucesso");
 
-    let result = monitor_loop(timeout, &mut icons_hidden, &mut taskbar, include_taskbar);
+    let result = monitor_loop(timeout, &mut icons_hidden, include_cursor);
+    // Restauro explícito do cursor antes do retorno (o guard cobre panics).
+    cursor::restore_system_cursor();
     daemon_log(&format!("encerrando: {result:?}"));
 
     // Libera os hooks antes de retornar (sucesso ou erro).
@@ -713,8 +653,7 @@ pub fn run(source: InputSource, include_taskbar: bool) -> Result<String, String>
 fn monitor_loop(
     timeout: Duration,
     icons_hidden: &mut bool,
-    taskbar: &mut TaskbarState,
-    include_taskbar: bool,
+    include_cursor: bool,
 ) -> Result<String, String> {
     let mut msg = MSG::default();
     // Momento da última checagem de ociosidade: garante a cadência de
@@ -757,8 +696,8 @@ fn monitor_loop(
             }
         }
         if quit {
-            if include_taskbar {
-                restore_taskbar(taskbar);
+            if include_cursor {
+                cursor::restore_system_cursor();
             }
             if *icons_hidden {
                 set_icons_visible(true);
@@ -776,8 +715,8 @@ fn monitor_loop(
 
         // Se foi desativado pelo comando `off`, reexibe os ícones e encerra.
         if !is_enabled_in_registry() {
-            if include_taskbar {
-                restore_taskbar(taskbar);
+            if include_cursor {
+                cursor::restore_system_cursor();
             }
             if *icons_hidden {
                 set_icons_visible(true);
@@ -785,26 +724,27 @@ fn monitor_loop(
             return Ok(t("hide_icons.run_stopped"));
         }
 
-        let idle_for = Duration::from_millis(
-            now.saturating_sub(LAST_ACTIVITY_MS.load(Ordering::Relaxed)),
-        );
+        let idle_for =
+            Duration::from_millis(now.saturating_sub(LAST_ACTIVITY_MS.load(Ordering::Relaxed)));
         let just_active = idle_for < POLL_INTERVAL;
 
         if just_active {
-            // Houve atividade: reexibe a barra e os ícones (se ocultos).
-            if include_taskbar && taskbar.hidden {
-                restore_taskbar(taskbar);
+            // Houve atividade: restaura o cursor ANTES de reexibir os ícones
+            // (o hook já costuma tê-lo feito; aqui é a rede de segurança).
+            if include_cursor {
+                cursor::restore_system_cursor();
             }
             if *icons_hidden {
                 set_icons_visible(true);
                 *icons_hidden = false;
                 daemon_log("atividade detectada: ícones restaurados");
-            } else if include_taskbar && taskbar.hidden {
-                daemon_log("atividade detectada: barra de tarefas restaurada");
             }
         } else if !*icons_hidden && idle_for >= timeout {
-            if include_taskbar {
-                hide_taskbar(taskbar);
+            if include_cursor {
+                match cursor::hide_system_cursor() {
+                    Ok(()) => daemon_log("cursor do sistema ocultado"),
+                    Err(e) => daemon_log(&format!("falha ao ocultar o cursor: {e}")),
+                }
             }
             set_icons_visible(false);
             *icons_hidden = true;

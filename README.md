@@ -111,11 +111,11 @@ ____
 
 - ``DesktopORZ hide-icons``
   
-  - ``hide-icons on <segundos> [--kb] [--mou] [-include-taskbar]`` Oculta os ícones após o tempo de inatividade informado, restaurando-os ao detectar atividade do teclado (--kb) e/ou mouse (--mou). Sem flags de fonte, ambos são monitorados.
+  - ``hide-icons on <segundos> [--kb] [--mou] [-include-cursor]`` Oculta os ícones após o tempo de inatividade informado, restaurando-os ao detectar atividade do teclado (--kb) e/ou mouse (--mou). Sem flags de fonte, ambos são monitorados.
   
-  - Com a flag ``-include-taskbar`` a barra de tarefas também é ocultada junto com os ícones (mesmo timeout e fontes de atividade), via Auto-Hide nativo do Windows; ao detectar atividade, o estado original da barra é restaurado.
+  - Com a flag ``-include-cursor`` o cursor do mouse também é ocultado junto com os ícones (mesmo timeout e fontes de atividade); ao detectar atividade, o cursor é restaurado.
   
-  - Exemplo: ``DesktopORZ hide-icons on 5 --kb --mou -include-taskbar``
+  - Exemplo: ``DesktopORZ hide-icons on 5 --kb --mou -include-cursor``
   
   - ``hide-icons status`` Mostra a configuração atual.
   

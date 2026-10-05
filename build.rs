@@ -18,7 +18,8 @@ fn main() {
         if path.extension().and_then(|e| e.to_str()) == Some("json") {
             println!("cargo:rerun-if-changed={}", path.display());
             let dest = langs_dir.join(path.file_name().unwrap());
-            fs::copy(&path, &dest).unwrap_or_else(|e| panic!("falha ao copiar {}: {e}", path.display()));
+            fs::copy(&path, &dest)
+                .unwrap_or_else(|e| panic!("falha ao copiar {}: {e}", path.display()));
         }
     }
 
@@ -59,10 +60,16 @@ fn embed_version_info() {
     );
     res.set("CompanyName", "ThainanViniciusKatchan")
         .set("ProductName", &env::var("CARGO_PKG_NAME").unwrap())
-        .set("FileDescription", &env::var("CARGO_PKG_DESCRIPTION").unwrap())
+        .set(
+            "FileDescription",
+            &env::var("CARGO_PKG_DESCRIPTION").unwrap(),
+        )
         .set("InternalName", "DesktopORZ")
         .set("OriginalFilename", "DesktopORZ")
-        .set("LegalCopyright", "Copyright (C) 2026 ThainanViniciusKatchan")
+        .set(
+            "LegalCopyright",
+            "Copyright (C) 2026 ThainanViniciusKatchan",
+        )
         .set_version_info(winresource::VersionInfo::FILEVERSION, packed)
         .set_version_info(winresource::VersionInfo::PRODUCTVERSION, packed);
 

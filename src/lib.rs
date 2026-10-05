@@ -19,6 +19,7 @@
 //! (`DesktopORZ-HideIcons.exe`, sem janela de console).
 
 pub mod config;
+pub mod cursor;
 pub mod hide_icons;
 pub mod i18n;
 pub mod layout;

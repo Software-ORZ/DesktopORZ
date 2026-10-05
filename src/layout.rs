@@ -119,7 +119,10 @@ pub fn restore_layout(profile: &DesktopProfile) -> Result<usize> {
                     }
                 }
 
-                let point = POINT { x: icon.x, y: icon.y };
+                let point = POINT {
+                    x: icon.x,
+                    y: icon.y,
+                };
                 point_buf.write(&point)?;
                 unsafe {
                     SendMessageW(

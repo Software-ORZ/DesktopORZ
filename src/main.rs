@@ -18,11 +18,11 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use desktoporz::i18n::{t, t_args};
+use desktoporz::types::{DesktopProfile, Resolution};
 use desktoporz::{
     config, hide_icons, i18n, layout, process_watcher, shell_locator, startup, wait_drive,
 };
-use desktoporz::i18n::{t, t_args};
-use desktoporz::types::{DesktopProfile, Resolution};
 
 const PROFILES_DIR: &str = "profiles";
 
@@ -187,8 +187,8 @@ fn run(args: &[String]) -> Result<String, String> {
                 // Timeout = primeiro argumento numérico após `on`; as flags
                 // --kb/--keyboard e --mou/--mouse escolhem a fonte de
                 // atividade (sem flag ou com as duas → ambas); a flag
-                // -include-taskbar/--include-taskbar também oculta a barra
-                // de tarefas junto com os ícones.
+                // -include-cursor/--include-cursor também oculta o cursor
+                // do mouse, junto com os ícones.
                 let segundos: u64 = args[2..]
                     .iter()
                     .filter(|a| !a.starts_with('-'))
@@ -196,11 +196,11 @@ fn run(args: &[String]) -> Result<String, String> {
                     .filter(|s| *s > 0)
                     .ok_or_else(|| t("hide_icons.usage"))?;
                 let source = input_source_arg(args)?;
-                hide_icons::enable(segundos, source, include_taskbar_arg(args))
+                hide_icons::enable(segundos, source, include_cursor_arg(args))
             }
             Some("off") => hide_icons::disable(),
             Some("status") | None => hide_icons::status(),
-            Some("run") => hide_icons::run(input_source_arg(args)?, include_taskbar_arg(args)),
+            Some("run") => hide_icons::run(input_source_arg(args)?, include_cursor_arg(args)),
             Some(_) => Err(t("hide_icons.usage")),
         },
         Some("help") | Some("--help") | Some("-h") | None => Ok(help_text()),
@@ -251,11 +251,11 @@ fn input_source_arg(args: &[String]) -> Result<hide_icons::InputSource, String> 
     ))
 }
 
-/// Flag opcional do `hide-icons on`: `-include-taskbar`/`--include-taskbar`
-/// oculta também a barra de tarefas junto com os ícones (mesmo timeout e
+/// Flag opcional do `hide-icons on`: `-include-cursor`/`--include-cursor`
+/// oculta também o cursor do mouse junto com os ícones (mesmo timeout e
 /// mesmas fontes de atividade).
-fn include_taskbar_arg(args: &[String]) -> bool {
-    hide_icons::include_taskbar_arg(args)
+fn include_cursor_arg(args: &[String]) -> bool {
+    hide_icons::include_cursor_arg(args)
 }
 
 fn timeout_arg(args: &[String]) -> Result<Option<std::time::Duration>, String> {
