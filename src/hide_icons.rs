@@ -29,23 +29,21 @@ use windows::Win32::System::Registry::{
     RegSetValueExW, HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_CREATE_KEY_DISPOSITION,
     REG_DWORD, REG_OPTION_NON_VOLATILE, REG_SAM_FLAGS, REG_SZ,
 };
-use windows::Win32::Foundation::{HMODULE, HWND, LPARAM, LRESULT, RECT, WPARAM, BOOL};
+use windows::Win32::Foundation::{HMODULE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::{
     GetModuleHandleExW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
     GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
 };
 use windows::Win32::Foundation::WAIT_EVENT;
-use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, DispatchMessageW, EnumWindows, FindWindowW, GetClassNameW, GetSystemMetrics,
-    GetWindowRect, GetWindowThreadProcessId, IsWindowVisible, IsZoomed,
-    MsgWaitForMultipleObjectsEx, PeekMessageW, SendNotifyMessageW, SetWindowPos, ShowWindow,
-    SystemParametersInfoW, TranslateMessage, UnhookWindowsHookEx, HHOOK, HWND_BROADCAST, MSG,
-    MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT, SM_CXSCREEN, SM_CYSCREEN, SPIF_SENDCHANGE,
-    SPI_GETWORKAREA, SPI_SETWORKAREA, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOW,
-    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_DISPLAYCHANGE,
-    WM_SETTINGCHANGE, SetWindowsHookExW,
+use windows::Win32::UI::Shell::{
+    SHAppBarMessage, ABM_GETSTATE, ABM_SETSTATE, ABS_ALWAYSONTOP, ABS_AUTOHIDE, APPBARDATA,
 };
-use windows::Win32::Graphics::Gdi::{EnumDisplaySettingsW, DEVMODEW, ENUM_CURRENT_SETTINGS};
+use windows::Win32::UI::WindowsAndMessaging::{
+    CallNextHookEx, DispatchMessageW, FindWindowW, IsWindowVisible,
+    MsgWaitForMultipleObjectsEx, PeekMessageW, ShowWindow, TranslateMessage,
+    UnhookWindowsHookEx, HHOOK, MSG, MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT,
+    SW_HIDE, SW_SHOW, WH_KEYBOARD_LL, WH_MOUSE_LL, SetWindowsHookExW,
+};
 
 const APP_KEY: windows::core::PCWSTR = w!("Software\\DesktopORZ");
 const RUN_KEY: windows::core::PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
@@ -67,7 +65,7 @@ pub struct HideIconsConfig {
     pub timeout_secs: u64,
     pub inputs: InputSource,
     /// Quando ativo, a barra de tarefas também é ocultada junto com os ícones
-    /// e a área útil da tela é expandida para 100% (workarea).
+    /// (via Auto-Hide nativo do shell, `ABM_SETSTATE`).
     pub include_taskbar: bool,
 }
 
@@ -493,229 +491,82 @@ fn set_icons_visible(visible: bool) {
     }
 }
 
-/// Estado da barra de tarefas para o loop de monitoramento: guarda se está
-/// oculta e o `RECT` original da área de trabalho (para restauração exata).
+/// Estado da barra de tarefas para o loop de monitoramento: guarda se o
+/// auto-hide está ativo e o estado AppBar original do shell (`ABS_*`),
+/// capturado via `ABM_GETSTATE` antes da primeira ocultação.
 #[derive(Default)]
 pub struct TaskbarState {
     hidden: bool,
-    original_work_area: Option<RECT>,
+    /// Estado AppBar original (bitmask `ABS_AUTOHIDE` | `ABS_ALWAYSONTOP`).
+    saved_state: Option<u32>,
 }
 
-/// Localiza as barras de tarefas: `Shell_TrayWnd` (principal) e
-/// `Shell_SecondaryTrayWnd` (monitores secundários, quando existem).
-fn taskbar_hwnds() -> Vec<HWND> {
-    let mut hwnds = Vec::new();
-    for class in [w!("Shell_TrayWnd"), w!("Shell_SecondaryTrayWnd")] {
-        if let Ok(hwnd) = unsafe { FindWindowW(class, None) } {
-            if hwnd != HWND::default() && !hwnds.contains(&hwnd) {
-                hwnds.push(hwnd);
-            }
-        }
+/// Monta o `APPBARDATA` apontando para a `Shell_TrayWnd` (barra principal).
+/// Retorna `None` se a barra não for encontrada (Explorer reiniciando, p.ex.).
+fn taskbar_appbar_data() -> Option<APPBARDATA> {
+    let hwnd = unsafe { FindWindowW(w!("Shell_TrayWnd"), None) }.ok()?;
+    if hwnd == HWND::default() {
+        return None;
     }
-    hwnds
+    Some(APPBARDATA {
+        cbSize: std::mem::size_of::<APPBARDATA>() as u32,
+        hWnd: hwnd,
+        ..Default::default()
+    })
 }
 
-/// Resolução física do monitor primário via `EnumDisplaySettingsW`.
-/// Diferente de `GetSystemMetrics(SM_CXSCREEN/SM_CYSCREEN)`, não é afetada
-/// pela virtualização de DPI em processos não-DPI-aware (como este daemon),
-/// então devolve os valores reais em pixels da tela (ex.: 1920x1080 mesmo
-/// com escala de 125%/150%).
-fn physical_screen_size() -> (i32, i32) {
+/// Consulta o estado AppBar atual do shell (`ABM_GETSTATE`).
+fn get_appbar_state(data: &mut APPBARDATA) -> u32 {
+    unsafe { SHAppBarMessage(ABM_GETSTATE, data) as u32 }
+}
+
+/// Aplica um novo estado AppBar ao shell (`ABM_SETSTATE`). O próprio Shell/DWM
+/// recalcula a workarea e redimensiona janelas fluidamente, cuja gestão fica
+/// inteiramente nativa — sem `ShowWindow`, `SPI_SETWORKAREA` ou `EnumWindows`.
+fn set_appbar_state(data: &mut APPBARDATA, state: u32) {
+    data.lParam = LPARAM(state as isize);
     unsafe {
-        let mut devmode = DEVMODEW::default();
-        devmode.dmSize = std::mem::size_of::<DEVMODEW>() as u16;
-        if EnumDisplaySettingsW(None, ENUM_CURRENT_SETTINGS, &mut devmode).as_bool() {
-            (devmode.dmPelsWidth as i32, devmode.dmPelsHeight as i32)
-        } else {
-            // Fallback: métricas do sistema (podem estar virtualizadas por DPI).
-            (
-                GetSystemMetrics(SM_CXSCREEN),
-                GetSystemMetrics(SM_CYSCREEN),
-            )
-        }
+        SHAppBarMessage(ABM_SETSTATE, data);
     }
 }
 
-/// Broadcast explícito de WM_SETTINGCHANGE (SPI_SETWORKAREA) + WM_DISPLAYCHANGE:
-/// complementa o SPIF_SENDCHANGE e notifica janelas maximizadas que precisam se
-/// reajustar à nova área útil (algumas ignoram a notificação interna do SPI; o
-/// WM_DISPLAYCHANGE força o DefWindowProc a recalcular o layout).
-fn broadcast_workarea_change() {
-    let (width, height) = physical_screen_size();
-    unsafe {
-        let _ = SendNotifyMessageW(
-            HWND_BROADCAST,
-            WM_SETTINGCHANGE,
-            WPARAM(SPI_SETWORKAREA.0 as usize),
-            LPARAM(0),
-        );
-        // WM_DISPLAYCHANGE com a resolução física (lo word = largura, hi = altura).
-        let dims = (((height & 0xffff) as isize) << 16) | (width & 0xffff) as isize;
-        let _ = SendNotifyMessageW(HWND_BROADCAST, WM_DISPLAYCHANGE, WPARAM(32), LPARAM(dims));
-    }
-}
-
-/// Oculta a barra de tarefas e expande a área útil para 100% da tela:
-/// 1. Salva o `RECT` original da workarea (SPI_GETWORKAREA) na primeira vez.
-/// 2. Esconde a(s) barra(s) com SW_HIDE ANTES de mexer na workarea: se a
-///    workarea fosse aplicada antes, o shell poderia recalculá-la quando a
-///    barra desaparecesse, sobrescrevendo o retângulo de tela cheia.
-/// 3. Monta `full_screen_rect` com a resolução física atual.
-/// 4. Chama SPI_SETWORKAREA com SPIF_SENDCHANGE + broadcast explícito.
-/// 5. Redimensiona via SetWindowPos as janelas maximizadas que ignoram o
-///    broadcast (o Explorer/CabinetWClass), eliminando o "buraco" de onde
-///    a barra de tarefas saiu.
+/// Ativa o Auto-Hide nativo da barra de tarefas: salva o estado original na
+/// primeira chamada e aplica `ABS_AUTOHIDE | ABS_ALWAYSONTOP`. O cabo de
+/// guerra com o DWM do Windows 11 some porque o shell passa a orquestrar a
+/// ocultação (é o mesmo caminho da configuração em Personalização).
 fn hide_taskbar(state: &mut TaskbarState) {
     if state.hidden {
         return;
     }
-    let (width, height) = physical_screen_size();
-    let full_screen_rect = RECT {
-        left: 0,
-        top: 0,
-        right: width,
-        bottom: height,
+    let Some(mut data) = taskbar_appbar_data() else {
+        daemon_log("Shell_TrayWnd não encontrada; auto-hide não aplicado");
+        return;
     };
-    unsafe {
-        if state.original_work_area.is_none() {
-            let mut rect = RECT::default();
-            if SystemParametersInfoW(
-                SPI_GETWORKAREA,
-                0,
-                Some(&mut rect as *mut RECT as *mut _),
-                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
-            )
-            .is_ok()
-            {
-                state.original_work_area = Some(rect);
-            }
-        }
-        for hwnd in taskbar_hwnds() {
-            let _ = ShowWindow(hwnd, SW_HIDE);
-        }
-        daemon_log(&format!(
-            "workarea: expandindo {:?} -> {:?}",
-            state.original_work_area, full_screen_rect
-        ));
-        if let Err(e) = SystemParametersInfoW(
-            SPI_SETWORKAREA,
-            0,
-            Some(&full_screen_rect as *const RECT as *mut _),
-            SPIF_SENDCHANGE,
-        ) {
-            daemon_log(&format!("SPI_SETWORKAREA falhou ao ocultar: {e}"));
-        }
+    if state.saved_state.is_none() {
+        let original = get_appbar_state(&mut data);
+        state.saved_state = Some(original);
+        daemon_log(&format!("estado AppBar original salvo: {original:#x}"));
     }
-    broadcast_workarea_change();
-    resize_zoomed_windows(&full_screen_rect);
+    set_appbar_state(&mut data, ABS_AUTOHIDE | ABS_ALWAYSONTOP);
     state.hidden = true;
 }
 
-/// Restaura a barra de tarefas: reexibe a(s) barra(s) com SW_SHOW ANTES de
-/// reaplicar o `RECT` original (SPI_SETWORKAREA). A ordem espelha a ocultação:
-/// ao reaplicar a workarea com a barra já visível, o shell registra a barra de
-/// volta como appbar e as janelas maximizadas reduzem para abrir espaço.
-/// Depois, `resize_zoomed_windows` devolve ao retângulo original as janelas
-/// que foram expandidas manualmente na ocultação (elas podem não encolher
-/// sozinhas só com o broadcast).
+/// Restaura a barra de tarefas reaplicando o estado AppBar original salvo
+/// (auto-hide ligado/desligado conforme estava antes do daemon intervir).
 fn restore_taskbar(state: &mut TaskbarState) {
     if !state.hidden {
         return;
     }
-    let restore_rect = state.original_work_area;
-    unsafe {
-        let hwnds = taskbar_hwnds();
-        for hwnd in &hwnds {
-            let before = IsWindowVisible(*hwnd).as_bool();
-            let _ = ShowWindow(*hwnd, SW_SHOW);
-            let after = IsWindowVisible(*hwnd).as_bool();
-            daemon_log(&format!(
-                "taskbar {hwnd:?}: visivel={before} -> {after}"
-            ));
+    let saved = state.saved_state.unwrap_or(0);
+    match taskbar_appbar_data() {
+        Some(mut data) => {
+            set_appbar_state(&mut data, saved);
+            daemon_log(&format!("estado AppBar restaurado: {saved:#x}"));
         }
-        if hwnds.is_empty() {
-            daemon_log("nenhuma barra de tarefas encontrada para restaurar");
-        }
-        if let Some(rect) = restore_rect {
-            daemon_log(&format!("workarea: restaurando {:?}", rect));
-            if let Err(e) = SystemParametersInfoW(
-                SPI_SETWORKAREA,
-                0,
-                Some(&rect as *const RECT as *mut _),
-                SPIF_SENDCHANGE,
-            ) {
-                daemon_log(&format!("SPI_SETWORKAREA falhou ao restaurar: {e}"));
-            }
-        }
+        None => daemon_log("Shell_TrayWnd não encontrada ao restaurar"),
     }
-    broadcast_workarea_change();
-    if let Some(rect) = restore_rect {
-        resize_zoomed_windows(&rect);
-    }
-    state.original_work_area = None;
+    state.saved_state = None;
     state.hidden = false;
-}
-
-/// Contexto passado ao callback de `resize_zoomed_windows` via `lparam`.
-struct ZoomedFixContext {
-    target: RECT,
-    own_pid: u32,
-}
-
-/// Callback do `EnumWindows`: redimensiona janelas top-level maximizadas cujo
-/// retângulo atual diverge do alvo (a nova workarea). Janelas do shell e do
-/// próprio processo são ignoradas; janelas já no tamanho certo não são tocadas
-/// (evita flicker). Cada ajuste é registrado no log do daemon para diagnóstico.
-unsafe extern "system" fn zoomed_window_enum(hwnd: HWND, lparam: LPARAM) -> BOOL {
-    let ctx = &*(lparam.0 as *const ZoomedFixContext);
-    if !IsWindowVisible(hwnd).as_bool() || !IsZoomed(hwnd).as_bool() {
-        return BOOL(1);
-    }
-    let mut pid: u32 = 0;
-    GetWindowThreadProcessId(hwnd, Some(&mut pid));
-    if pid == ctx.own_pid {
-        return BOOL(1);
-    }
-    let mut class_buf = [0u16; 64];
-    let class_len = GetClassNameW(hwnd, &mut class_buf);
-    let class = String::from_utf16_lossy(&class_buf[..class_len as usize]);
-    match class.as_str() {
-        "Shell_TrayWnd" | "Shell_SecondaryTrayWnd" | "Progman" | "WorkerW" => return BOOL(1),
-        _ => {}
-    }
-    let mut rect = RECT::default();
-    if GetWindowRect(hwnd, &mut rect).is_ok() && rect != ctx.target {
-        daemon_log(&format!(
-            "zoomed {hwnd:?} ({class}): {:?} -> {:?}",
-            rect, ctx.target
-        ));
-        // hwndinsert_after é ignorado com SWP_NOZORDER; HWND::default() = NULL.
-        let _ = SetWindowPos(
-            hwnd,
-            HWND::default(),
-            ctx.target.left,
-            ctx.target.top,
-            ctx.target.right - ctx.target.left,
-            ctx.target.bottom - ctx.target.top,
-            SWP_NOZORDER | SWP_NOACTIVATE,
-        );
-    }
-    BOOL(1)
-}
-
-/// Força as janelas maximizadas a obedecerem `target` (a workarea): nem toda
-/// janela maximizada reage ao broadcast de WM_SETTINGCHANGE/WM_DISPLAYCHANGE —
-/// o Explorer (CabinetWClass), por exemplo, ignora a notificação e deixa um
-/// "buraco" onde a barra de tarefas ficava. Esta passada é a rede de segurança
-/// que ajusta essas janelas via SetWindowPos (mantendo-as maximizadas).
-fn resize_zoomed_windows(target: &RECT) {
-    let ctx = ZoomedFixContext {
-        target: *target,
-        own_pid: std::process::id(),
-    };
-    unsafe {
-        let _ = EnumWindows(Some(zoomed_window_enum), LPARAM(&ctx as *const _ as isize));
-    }
 }
 
 /// Timestamp (em ms) da última atividade detectada pelos hooks. Atômico
@@ -750,7 +601,7 @@ unsafe extern "system" fn input_hook(code: i32, wparam: WPARAM, lparam: LPARAM) 
 /// Logger mínimo do daemon: como ele roda sem console (subsistema Windows),
 /// erros e transições são registrados em `hide-icons-daemon.log` ao lado
 /// do executável, para diagnóstico. Falhas de escrita são ignoradas.
-fn daemon_log(message: &str) {
+pub(crate) fn daemon_log(message: &str) {
     use std::io::Write;
     if let Ok(path) = exe_path() {
         let log = path

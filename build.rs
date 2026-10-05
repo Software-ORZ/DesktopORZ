@@ -42,6 +42,21 @@ fn embed_version_info() {
         | parts.next().unwrap_or(0);
 
     let mut res = winresource::WindowsResource::new();
+    // Manifesto com DPI-awareness PerMonitorV2: mantém as coordenadas sem
+    // virtualização de DPI em setups multi-monitor. O recurso só é embutido
+    // em alvos Windows.
+    res.set_manifest(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <assemblyIdentity version="1.0.0.0" name="DesktopORZ.app" type="win32"/>
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+    </windowsSettings>
+  </application>
+</assembly>"#,
+    );
     res.set("CompanyName", "ThainanViniciusKatchan")
         .set("ProductName", &env::var("CARGO_PKG_NAME").unwrap())
         .set("FileDescription", &env::var("CARGO_PKG_DESCRIPTION").unwrap())
