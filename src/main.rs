@@ -188,7 +188,10 @@ fn run(args: &[String]) -> Result<String, String> {
                 // --kb/--keyboard e --mou/--mouse escolhem a fonte de
                 // atividade (sem flag ou com as duas → ambas); a flag
                 // -include-cursor/--include-cursor também oculta o cursor
-                // do mouse, junto com os ícones.
+                // do mouse, junto com os ícones; -include-taskbar /
+                // --include-taskbar expande as janelas abertas para a
+                // resolução física total do monitor enquanto a barra de
+                // tarefas está oculta (restauradas ao detectar atividade).
                 let segundos: u64 = args[2..]
                     .iter()
                     .filter(|a| !a.starts_with('-'))
@@ -196,11 +199,20 @@ fn run(args: &[String]) -> Result<String, String> {
                     .filter(|s| *s > 0)
                     .ok_or_else(|| t("hide_icons.usage"))?;
                 let source = input_source_arg(args)?;
-                hide_icons::enable(segundos, source, include_cursor_arg(args))
+                hide_icons::enable(
+                    segundos,
+                    source,
+                    include_cursor_arg(args),
+                    include_taskbar_arg(args),
+                )
             }
             Some("off") => hide_icons::disable(),
             Some("status") | None => hide_icons::status(),
-            Some("run") => hide_icons::run(input_source_arg(args)?, include_cursor_arg(args)),
+            Some("run") => hide_icons::run(
+                input_source_arg(args)?,
+                include_cursor_arg(args),
+                include_taskbar_arg(args),
+            ),
             Some(_) => Err(t("hide_icons.usage")),
         },
         Some("help") | Some("--help") | Some("-h") | None => Ok(help_text()),
@@ -256,6 +268,14 @@ fn input_source_arg(args: &[String]) -> Result<hide_icons::InputSource, String> 
 /// mesmas fontes de atividade).
 fn include_cursor_arg(args: &[String]) -> bool {
     hide_icons::include_cursor_arg(args)
+}
+
+/// Flag opcional do `hide-icons on`: `-include-taskbar`/`--include-taskbar`
+/// expande as janelas visíveis de nível superior para a resolução física
+/// total do monitor enquanto a barra de tarefas está oculta; ao detectar
+/// atividade, as janelas voltam à área útil padrão (SW_MAXIMIZE/rcWork).
+fn include_taskbar_arg(args: &[String]) -> bool {
+    hide_icons::include_taskbar_arg(args)
 }
 
 fn timeout_arg(args: &[String]) -> Result<Option<std::time::Duration>, String> {

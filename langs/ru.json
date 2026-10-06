@@ -64,7 +64,7 @@
     "timeout_off": "без тайм-аута"
   },
   "hide_icons": {
-    "usage": "Использование: hide-icons [on <секунды> [--kb] [--mou] [-include-cursor] | off | status]",
+    "usage": "Использование: hide-icons [on <секунды> [--kb] [--mou] [-include-cursor] [-include-taskbar] | off | status]",
     "source_mouse": "мышь",
     "source_keyboard": "клавиатура",
     "source_both": "клавиатура и мышь",
@@ -89,6 +89,6 @@
     "changed": "Язык изменён на '{lang}'."
   },
   "help": {
-    "text": "DesktopORZ — менеджер расположения значков рабочего стола\n\nИспользование:\n  save <профиль>                    Сохраняет текущее расположение в профиль\n  save-res <профиль> [<Ш>x<В>]      Сохраняет расположение для конкретного разрешения\n  profile-update <профиль>          Обновляет основное расположение профиля\n  restore <профиль>                 Восстанавливает расположение профиля\n  list                              Показывает сохранённые профили\n  startup [on <профиль>|off|status]  Управляет автозапуском\n  wait-drive [on <профиль> [--timeout <с>]|off|status]  Ожидает Google Drive при запуске\n  hide-icons [on <с> [--kb] [--mou] [-include-cursor]|off|status]  Скрывает значки после бездействия (KB=клавиатура, MOU=мышь, курсор с -include-cursor)\n  lang [<код>]                      Показывает или меняет язык (например, lang ru)\n  help                              Показывает эту справку"
+    "text": "DesktopORZ — менеджер расположения значков рабочего стола\n\nИспользование:\n  save <профиль>                    Сохраняет текущее расположение в профиль\n  save-res <профиль> [<Ш>x<В>]      Сохраняет расположение для конкретного разрешения\n  profile-update <профиль>          Обновляет основное расположение профиля\n  restore <профиль>                 Восстанавливает расположение профиля\n  list                              Показывает сохранённые профили\n  startup [on <профиль>|off|status]  Управляет автозапуском\n  wait-drive [on <профиль> [--timeout <с>]|off|status]  Ожидает Google Drive при запуске\n  hide-icons [on <с> [--kb] [--mou] [-include-cursor] [-include-taskbar]|off|status]  Скрывает значки после бездействия (KB=клавиатура, MOU=мышь, курсор с -include-cursor; окна во весь физический экран с -include-taskbar)\n  lang [<код>]                      Показывает или меняет язык (например, lang ru)\n  help                              Показывает эту справку"
   }
 }

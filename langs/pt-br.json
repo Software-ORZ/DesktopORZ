@@ -64,7 +64,7 @@
     "timeout_off": "sem timeout"
   },
   "hide_icons": {
-    "usage": "Uso: hide-icons [on <segundos> [--kb] [--mou] [-include-cursor] | off | status]",
+    "usage": "Uso: hide-icons [on <segundos> [--kb] [--mou] [-include-cursor] [-include-taskbar] | off | status]",
     "source_mouse": "mouse",
     "source_keyboard": "teclado",
     "source_both": "teclado e mouse",
@@ -89,6 +89,6 @@
     "changed": "Idioma alterado para '{lang}'."
   },
   "help": {
-    "text": "DesktopORZ — gerenciador de layout de ícones da área de trabalho\n\nUso:\n  save <perfil>                     Salva o layout atual no perfil\n  save-res <perfil> [<L>x<A>]       Salva o layout para uma resolução específica\n  profile-update <perfil>           Atualiza o layout principal do perfil\n  restore <perfil>                  Restaura o layout do perfil\n  list                              Lista os perfis salvos\n  startup [on <perfil>|off|status]  Gerencia a inicialização automática\n  wait-drive [on <perfil> [--timeout <s>]|off|status]  Aguarda o Google Drive ao iniciar\n  hide-icons [on <s> [--kb] [--mou] [-include-cursor]|off|status]  Oculta os ícones após inatividade (KB=teclado, MOU=mouse, cursor com -include-cursor)\n  lang [<sigla>]                    Mostra ou altera o idioma (ex.: lang en)\n  help                              Mostra esta ajuda"
+    "text": "DesktopORZ — gerenciador de layout de ícones da área de trabalho\n\nUso:\n  save <perfil>                     Salva o layout atual no perfil\n  save-res <perfil> [<L>x<A>]       Salva o layout para uma resolução específica\n  profile-update <perfil>           Atualiza o layout principal do perfil\n  restore <perfil>                  Restaura o layout do perfil\n  list                              Lista os perfis salvos\n  startup [on <perfil>|off|status]  Gerencia a inicialização automática\n  wait-drive [on <perfil> [--timeout <s>]|off|status]  Aguarda o Google Drive ao iniciar\n  hide-icons [on <s> [--kb] [--mou] [-include-cursor] [-include-taskbar]|off|status]  Oculta os ícones após inatividade (KB=teclado, MOU=mouse; cursor com -include-cursor; janelas em tela cheia física com -include-taskbar)\n  lang [<sigla>]                    Mostra ou altera o idioma (ex.: lang en)\n  help                              Mostra esta ajuda"
   }
 }

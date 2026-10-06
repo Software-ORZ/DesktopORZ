@@ -54,6 +54,10 @@ pub struct HideIconsMirror {
     /// Quando true, o cursor do mouse também é ocultado junto com os ícones.
     #[serde(default)]
     pub include_cursor: Option<bool>,
+    /// Quando true, as janelas abertas são expandidas para a resolução
+    /// física total do monitor junto com a barra de tarefas oculta.
+    #[serde(default)]
+    pub include_taskbar: Option<bool>,
 }
 
 /// Espelho da configuração do wait-drive (source of truth: registro).

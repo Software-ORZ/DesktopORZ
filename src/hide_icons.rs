@@ -24,6 +24,7 @@ use crate::cursor;
 use crate::i18n::{t, t_args};
 use crate::shell_locator;
 use crate::taskbar_hide::TaskbarHider;
+use crate::window_expand::WindowExpander;
 
 use windows::core::w;
 use windows::Win32::Foundation::WAIT_EVENT;
@@ -49,6 +50,7 @@ const VALUE_ENABLED: windows::core::PCWSTR = w!("HideIconsEnabled");
 const VALUE_TIMEOUT: windows::core::PCWSTR = w!("HideIconsTimeout");
 const VALUE_INPUTS: windows::core::PCWSTR = w!("HideIconsInputs");
 const VALUE_CURSOR: windows::core::PCWSTR = w!("HideIconsCursor");
+const VALUE_TASKBAR: windows::core::PCWSTR = w!("HideIconsTaskbar");
 const RUN_VALUE_NAME: windows::core::PCWSTR = w!("DesktopORZ-HideIcons");
 
 /// Intervalo de varredura do loop: 500ms mantém a CPU praticamente em zero
@@ -65,6 +67,9 @@ pub struct HideIconsConfig {
     /// Quando ativo, o cursor do mouse também é ocultado junto com os ícones
     /// (cursor transparente via `SetSystemCursor`).
     pub include_cursor: bool,
+    /// Quando ativo, além de ocultar a barra de tarefas o daemon expande as
+    /// janelas top-level abertas para a resolução física total do monitor.
+    pub include_taskbar: bool,
 }
 
 /// Lê a flag `-include-cursor`/`--include-cursor` dos argumentos recebidos
@@ -72,6 +77,13 @@ pub struct HideIconsConfig {
 pub fn include_cursor_arg(args: &[String]) -> bool {
     args.iter()
         .any(|a| a == "-include-cursor" || a == "--include-cursor")
+}
+
+/// Lê a flag `-include-taskbar`/`--include-taskbar` dos argumentos recebidos
+/// pelo daemon na linha de comando (entrada Run ou spawn do CLI).
+pub fn include_taskbar_arg(args: &[String]) -> bool {
+    args.iter()
+        .any(|a| a == "-include-taskbar" || a == "--include-taskbar")
 }
 
 /// Fonte(s) de atividade que restauram os ícones e zeram o contador de
@@ -290,14 +302,23 @@ fn daemon_path() -> Result<PathBuf, String> {
 
 pub const DAEMON_EXE_NAME: &str = "DesktopORZ-HideIcons.exe";
 
-fn register_run_entry(inputs: InputSource, include_cursor: bool) -> Result<(), String> {
+fn register_run_entry(
+    inputs: InputSource,
+    include_cursor: bool,
+    include_taskbar: bool,
+) -> Result<(), String> {
     let exe = daemon_path()?;
     let cmd = format!(
-        "\"{}\" {}{}",
+        "\"{}\" {}{}{}",
         exe.display(),
         inputs.flags(),
         if include_cursor {
             " --include-cursor"
+        } else {
+            ""
+        },
+        if include_taskbar {
+            " --include-taskbar"
         } else {
             ""
         }
@@ -330,6 +351,7 @@ pub fn load_config() -> HideIconsConfig {
                 .map(InputSource::from_bits)
                 .unwrap_or_default(),
             include_cursor: mirror.include_cursor.unwrap_or(false),
+            include_taskbar: mirror.include_taskbar.unwrap_or(false),
         };
     }
     // Sem espelho: cai no registro e autopopula o config.json.
@@ -352,6 +374,9 @@ pub fn load_config() -> HideIconsConfig {
         config.include_cursor = query_dword(key, VALUE_CURSOR)
             .map(|v| v != 0)
             .unwrap_or(false);
+        config.include_taskbar = query_dword(key, VALUE_TASKBAR)
+            .map(|v| v != 0)
+            .unwrap_or(false);
         unsafe {
             let _ = RegCloseKey(key);
         }
@@ -361,6 +386,7 @@ pub fn load_config() -> HideIconsConfig {
             timeout_secs: Some(config.timeout_secs),
             inputs: Some(config.inputs.bits()),
             include_cursor: Some(config.include_cursor),
+            include_taskbar: Some(config.include_taskbar),
         }));
     }
     config
@@ -371,7 +397,7 @@ pub fn load_config() -> HideIconsConfig {
 /// do CLI quando estiver ativado.
 pub fn ensure_run_entry() -> Result<(), String> {
     let config = load_config();
-    register_run_entry(config.inputs, config.include_cursor)
+    register_run_entry(config.inputs, config.include_cursor, config.include_taskbar)
 }
 
 /// Inicia o monitor imediatamente (detached), sem esperar o próximo login.
@@ -388,6 +414,9 @@ pub fn spawn_daemon() {
             if config.include_cursor {
                 daemon_args.push("--include-cursor".to_string());
             }
+            if config.include_taskbar {
+                daemon_args.push("--include-taskbar".to_string());
+            }
             let _ = std::process::Command::new(daemon)
                 .args(daemon_args)
                 .stdin(std::process::Stdio::null())
@@ -402,6 +431,7 @@ pub fn enable(
     timeout_secs: u64,
     inputs: InputSource,
     include_cursor: bool,
+    include_taskbar: bool,
 ) -> Result<String, String> {
     if timeout_secs == 0 {
         return Err(t("hide_icons.timeout_zero"));
@@ -410,18 +440,20 @@ pub fn enable(
     let result = set_dword(key, VALUE_ENABLED, 1)
         .and_then(|_| set_dword(key, VALUE_TIMEOUT, timeout_secs as u32))
         .and_then(|_| set_dword(key, VALUE_INPUTS, inputs.bits()))
-        .and_then(|_| set_dword(key, VALUE_CURSOR, include_cursor as u32));
+        .and_then(|_| set_dword(key, VALUE_CURSOR, include_cursor as u32))
+        .and_then(|_| set_dword(key, VALUE_TASKBAR, include_taskbar as u32));
     unsafe {
         let _ = RegCloseKey(key);
     }
     result?;
-    register_run_entry(inputs, include_cursor)?;
+    register_run_entry(inputs, include_cursor, include_taskbar)?;
     // Espelha a configuração no config.json (o registro continua a fonte real).
     config::set_hide_icons(Some(HideIconsMirror {
         enabled: true,
         timeout_secs: Some(timeout_secs),
         inputs: Some(inputs.bits()),
         include_cursor: Some(include_cursor),
+        include_taskbar: Some(include_taskbar),
     }));
     spawn_daemon();
     Ok(t_args(
@@ -436,6 +468,7 @@ pub fn disable() -> Result<String, String> {
     delete_value(key, VALUE_TIMEOUT);
     delete_value(key, VALUE_INPUTS);
     delete_value(key, VALUE_CURSOR);
+    delete_value(key, VALUE_TASKBAR);
     unsafe {
         let _ = RegCloseKey(key);
     }
@@ -445,6 +478,7 @@ pub fn disable() -> Result<String, String> {
         timeout_secs: None,
         inputs: None,
         include_cursor: None,
+        include_taskbar: None,
     }));
     Ok(t("hide_icons.disabled"))
 }
@@ -585,7 +619,11 @@ fn install_hook(
 /// atividade; o thread mantém um mini loop de mensagens (`PeekMessageW`,
 /// obrigatório para o sistema entregar os hooks) e, a cada ~500ms, mede a
 /// ociosidade e alterna a visibilidade dos ícones.
-pub fn run(source: InputSource, include_cursor: bool) -> Result<String, String> {
+pub fn run(
+    source: InputSource,
+    include_cursor: bool,
+    include_taskbar: bool,
+) -> Result<String, String> {
     let config = load_config();
     if !config.enabled {
         return Err(t("hide_icons.disabled_error"));
@@ -640,7 +678,17 @@ pub fn run(source: InputSource, include_cursor: bool) -> Result<String, String> 
     // RAII: o `Drop` do hider restaura a barra e a Work Area original se o
     // loop sair por qualquer caminho (incluindo unwind de panic).
     let mut taskbar = TaskbarHider::new();
-    let result = monitor_loop(timeout, &mut icons_hidden, &mut taskbar, include_cursor);
+    // RAII: o `Drop` do expander devolve as janelas expandidas ao estado
+    // maximizado padrão se o loop sair por qualquer caminho (incluindo panic).
+    let mut expander = WindowExpander::new();
+    let result = monitor_loop(
+        timeout,
+        &mut icons_hidden,
+        &mut taskbar,
+        &mut expander,
+        include_cursor,
+        include_taskbar,
+    );
     // Restauro explícito do cursor antes do retorno (o guard cobre panics).
     cursor::restore_system_cursor();
     daemon_log(&format!("encerrando: {result:?}"));
@@ -658,7 +706,9 @@ fn monitor_loop(
     timeout: Duration,
     icons_hidden: &mut bool,
     taskbar: &mut TaskbarHider,
+    expander: &mut WindowExpander,
     include_cursor: bool,
+    include_taskbar: bool,
 ) -> Result<String, String> {
     let mut msg = MSG::default();
     // Momento da última checagem de ociosidade: garante a cadência de
@@ -712,6 +762,15 @@ fn monitor_loop(
             if let Err(e) = taskbar.show() {
                 daemon_log(&format!("falha ao restaurar a barra de tarefas: {e}"));
             }
+            // Devolve as janelas expandidas ao estado maximizado padrão
+            // (Work Area já restaurada acima); o `Drop` do expander cobre
+            // os caminhos não explícitos.
+            if include_taskbar && expander.is_expanded() {
+                let restauradas = expander.restore_all();
+                daemon_log(&format!(
+                    "encerramento: {restauradas} janelas restauradas à área útil"
+                ));
+            }
             return Ok(t("hide_icons.run_stopped"));
         }
 
@@ -733,6 +792,15 @@ fn monitor_loop(
             }
             if let Err(e) = taskbar.show() {
                 daemon_log(&format!("falha ao restaurar a barra de tarefas: {e}"));
+            }
+            // Devolve as janelas expandidas ao estado maximizado padrão
+            // (Work Area já restaurada acima); o `Drop` do expander cobre
+            // os caminhos não explícitos.
+            if include_taskbar && expander.is_expanded() {
+                let restauradas = expander.restore_all();
+                daemon_log(&format!(
+                    "encerramento: {restauradas} janelas restauradas à área útil"
+                ));
             }
             return Ok(t("hide_icons.run_stopped"));
         }
@@ -757,6 +825,14 @@ fn monitor_loop(
                     Ok(()) => daemon_log("atividade detectada: barra de tarefas restaurada"),
                     Err(e) => daemon_log(&format!("falha ao restaurar a barra de tarefas: {e}")),
                 }
+                // Depois da Work Area original ser reagraçada, SW_MAXIMIZE
+                // faz o subsistema reforçar a margem padrão da área útil.
+                if include_taskbar && expander.is_expanded() {
+                    let restauradas = expander.restore_all();
+                    daemon_log(&format!(
+                        "atividade detectada: {restauradas} janelas restauradas à área útil"
+                    ));
+                }
             }
         } else if !*icons_hidden && idle_for >= timeout {
             if include_cursor {
@@ -771,6 +847,17 @@ fn monitor_loop(
             match taskbar.hide() {
                 Ok(()) => daemon_log("inatividade atingiu o timeout: barra de tarefas ocultada"),
                 Err(e) => daemon_log(&format!("falha ao ocultar a barra de tarefas: {e}")),
+            }
+            // Expande as janelas para a borda física da tela DEPOIS da Work
+            // Area já estar ampliada — qualquer resize reativo da shell já
+            // aconteceu, então não disputamos a geometria com ele.
+            if include_taskbar {
+                match expander.expand_all() {
+                    Ok(expandidas) => daemon_log(&format!(
+                        "inatividade atingiu o timeout: {expandidas} janelas expandidas para a tela toda"
+                    )),
+                    Err(e) => daemon_log(&format!("falha ao expandir as janelas: {e}")),
+                }
             }
         }
     }

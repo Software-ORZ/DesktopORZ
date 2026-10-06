@@ -29,4 +29,5 @@ pub mod shell_locator;
 pub mod startup;
 pub mod taskbar_hide;
 pub mod types;
+pub mod window_expand;
 pub mod wait_drive;

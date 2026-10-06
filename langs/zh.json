@@ -64,7 +64,7 @@
     "timeout_off": "无超时"
   },
   "hide_icons": {
-    "usage": "用法：hide-icons [on <秒> [--kb] [--mou] [-include-cursor] | off | status]",
+    "usage": "用法：hide-icons [on <秒> [--kb] [--mou] [-include-cursor] [-include-taskbar] | off | status]",
     "source_mouse": "鼠标",
     "source_keyboard": "键盘",
     "source_both": "键盘和鼠标",
@@ -89,6 +89,6 @@
     "changed": "语言已更改为 '{lang}'。"
   },
   "help": {
-    "text": "DesktopORZ — 桌面图标布局管理器\n\n用法：\n  save <配置文件>                    将当前布局保存到配置文件\n  save-res <配置文件> [<宽>x<高>]      为特定分辨率保存布局\n  profile-update <配置文件>          更新配置文件的主布局\n  restore <配置文件>                 恢复配置文件的布局\n  list                              列出已保存的配置文件\n  startup [on <配置文件>|off|status]  管理自动启动\n  wait-drive [on <配置文件> [--timeout <秒>]|off|status]  启动时等待 Google Drive\n  hide-icons [on <秒> [--kb] [--mou] [-include-cursor]|off|status]  空闲后隐藏图标（KB=键盘，MOU=鼠标，-include-cursor 同时隐藏鼠标光标）\n  lang [<代码>]                     显示或更改语言（例如 lang zh）\n  help                              显示此帮助"
+    "text": "DesktopORZ — 桌面图标布局管理器\n\n用法：\n  save <配置文件>                    将当前布局保存到配置文件\n  save-res <配置文件> [<宽>x<高>]      为特定分辨率保存布局\n  profile-update <配置文件>          更新配置文件的主布局\n  restore <配置文件>                 恢复配置文件的布局\n  list                              列出已保存的配置文件\n  startup [on <配置文件>|off|status]  管理自动启动\n  wait-drive [on <配置文件> [--timeout <秒>]|off|status]  启动时等待 Google Drive\n  hide-icons [on <秒> [--kb] [--mou] [-include-cursor] [-include-taskbar]|off|status]  空闲后隐藏图标（KB=键盘，MOU=鼠标，-include-cursor 同时隐藏鼠标光标；-include-taskbar 将窗口扩展到物理全屏）\n  lang [<代码>]                     显示或更改语言（例如 lang zh）\n  help                              显示此帮助"
   }
 }
