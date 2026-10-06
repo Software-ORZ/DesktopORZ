@@ -27,5 +27,6 @@ pub mod process_watcher;
 pub mod remote_memory;
 pub mod shell_locator;
 pub mod startup;
+pub mod taskbar_hide;
 pub mod types;
 pub mod wait_drive;

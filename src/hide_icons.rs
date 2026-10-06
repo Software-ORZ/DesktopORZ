@@ -23,6 +23,7 @@ use crate::config::{self, HideIconsMirror};
 use crate::cursor;
 use crate::i18n::{t, t_args};
 use crate::shell_locator;
+use crate::taskbar_hide::TaskbarHider;
 
 use windows::core::w;
 use windows::Win32::Foundation::WAIT_EVENT;
@@ -636,7 +637,10 @@ pub fn run(source: InputSource, include_cursor: bool) -> Result<String, String> 
     };
     daemon_log("hooks instalados com sucesso");
 
-    let result = monitor_loop(timeout, &mut icons_hidden, include_cursor);
+    // RAII: o `Drop` do hider restaura a barra e a Work Area original se o
+    // loop sair por qualquer caminho (incluindo unwind de panic).
+    let mut taskbar = TaskbarHider::new();
+    let result = monitor_loop(timeout, &mut icons_hidden, &mut taskbar, include_cursor);
     // Restauro explícito do cursor antes do retorno (o guard cobre panics).
     cursor::restore_system_cursor();
     daemon_log(&format!("encerrando: {result:?}"));
@@ -653,6 +657,7 @@ pub fn run(source: InputSource, include_cursor: bool) -> Result<String, String> 
 fn monitor_loop(
     timeout: Duration,
     icons_hidden: &mut bool,
+    taskbar: &mut TaskbarHider,
     include_cursor: bool,
 ) -> Result<String, String> {
     let mut msg = MSG::default();
@@ -702,6 +707,11 @@ fn monitor_loop(
             if *icons_hidden {
                 set_icons_visible(true);
             }
+            // O `Drop` também restauraria, mas fazê-lo explicitamente aqui
+            // mantém a ordem com os ícones/cursor e permite logar falhas.
+            if let Err(e) = taskbar.show() {
+                daemon_log(&format!("falha ao restaurar a barra de tarefas: {e}"));
+            }
             return Ok(t("hide_icons.run_stopped"));
         }
 
@@ -721,6 +731,9 @@ fn monitor_loop(
             if *icons_hidden {
                 set_icons_visible(true);
             }
+            if let Err(e) = taskbar.show() {
+                daemon_log(&format!("falha ao restaurar a barra de tarefas: {e}"));
+            }
             return Ok(t("hide_icons.run_stopped"));
         }
 
@@ -739,6 +752,12 @@ fn monitor_loop(
                 *icons_hidden = false;
                 daemon_log("atividade detectada: ícones restaurados");
             }
+            if taskbar.is_hidden() {
+                match taskbar.show() {
+                    Ok(()) => daemon_log("atividade detectada: barra de tarefas restaurada"),
+                    Err(e) => daemon_log(&format!("falha ao restaurar a barra de tarefas: {e}")),
+                }
+            }
         } else if !*icons_hidden && idle_for >= timeout {
             if include_cursor {
                 match cursor::hide_system_cursor() {
@@ -749,6 +768,10 @@ fn monitor_loop(
             set_icons_visible(false);
             *icons_hidden = true;
             daemon_log("inatividade atingiu o timeout: ícones ocultados");
+            match taskbar.hide() {
+                Ok(()) => daemon_log("inatividade atingiu o timeout: barra de tarefas ocultada"),
+                Err(e) => daemon_log(&format!("falha ao ocultar a barra de tarefas: {e}")),
+            }
         }
     }
 }
