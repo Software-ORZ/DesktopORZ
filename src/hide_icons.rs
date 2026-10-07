@@ -759,8 +759,10 @@ fn monitor_loop(
             }
             // O `Drop` também restauraria, mas fazê-lo explicitamente aqui
             // mantém a ordem com os ícones/cursor e permite logar falhas.
-            if let Err(e) = taskbar.show() {
-                daemon_log(&format!("falha ao restaurar a barra de tarefas: {e}"));
+            if include_taskbar {
+                if let Err(e) = taskbar.show() {
+                    daemon_log(&format!("falha ao restaurar a barra de tarefas: {e}"));
+                }
             }
             // Devolve as janelas expandidas ao estado maximizado padrão
             // (Work Area já restaurada acima); o `Drop` do expander cobre
@@ -790,8 +792,10 @@ fn monitor_loop(
             if *icons_hidden {
                 set_icons_visible(true);
             }
-            if let Err(e) = taskbar.show() {
-                daemon_log(&format!("falha ao restaurar a barra de tarefas: {e}"));
+            if include_taskbar {
+                if let Err(e) = taskbar.show() {
+                    daemon_log(&format!("falha ao restaurar a barra de tarefas: {e}"));
+                }
             }
             // Devolve as janelas expandidas ao estado maximizado padrão
             // (Work Area já restaurada acima); o `Drop` do expander cobre
@@ -820,7 +824,7 @@ fn monitor_loop(
                 *icons_hidden = false;
                 daemon_log("atividade detectada: ícones restaurados");
             }
-            if taskbar.is_hidden() {
+            if include_taskbar && taskbar.is_hidden() {
                 match taskbar.show() {
                     Ok(()) => daemon_log("atividade detectada: barra de tarefas restaurada"),
                     Err(e) => daemon_log(&format!("falha ao restaurar a barra de tarefas: {e}")),
@@ -844,9 +848,11 @@ fn monitor_loop(
             set_icons_visible(false);
             *icons_hidden = true;
             daemon_log("inatividade atingiu o timeout: ícones ocultados");
-            match taskbar.hide() {
-                Ok(()) => daemon_log("inatividade atingiu o timeout: barra de tarefas ocultada"),
-                Err(e) => daemon_log(&format!("falha ao ocultar a barra de tarefas: {e}")),
+            if include_taskbar {
+                match taskbar.hide() {
+                    Ok(()) => daemon_log("inatividade atingiu o timeout: barra de tarefas ocultada"),
+                    Err(e) => daemon_log(&format!("falha ao ocultar a barra de tarefas: {e}")),
+                }
             }
             // Expande as janelas para a borda física da tela DEPOIS da Work
             // Area já estar ampliada — qualquer resize reativo da shell já
