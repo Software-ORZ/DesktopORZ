@@ -22,7 +22,8 @@ fn builtin_fallback() -> HashMap<String, String> {
         ),
         (
             "lang.not_found".to_string(),
-            "Language file '{lang}.json' not found in the 'langs' folder next to the executable.".to_string(),
+            "Language file '{lang}.json' not found in the 'langs' folder next to the executable."
+                .to_string(),
         ),
     ])
 }
@@ -55,11 +56,26 @@ fn exe_dir() -> Option<std::path::PathBuf> {
 
 /// Idiomas embutidos no binário (funcionam mesmo sem a pasta `langs/`).
 const EMBEDDED: &[(&str, &str)] = &[
-    ("pt-br", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/langs/pt-br.json"))),
-    ("en-us", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/langs/en-us.json"))),
-    ("ru", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/langs/ru.json"))),
-    ("zh", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/langs/zh.json"))),
-    ("es", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/langs/es.json"))),
+    (
+        "pt-br",
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/langs/pt-br.json")),
+    ),
+    (
+        "en-us",
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/langs/en-us.json")),
+    ),
+    (
+        "ru",
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/langs/ru.json")),
+    ),
+    (
+        "zh",
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/langs/zh.json")),
+    ),
+    (
+        "es",
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/langs/es.json")),
+    ),
 ];
 
 /// Retorna o JSON embutido da sigla, se existir.

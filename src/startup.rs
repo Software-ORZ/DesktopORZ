@@ -15,7 +15,7 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::config::{self, StartupMirror};
 use crate::hide_icons;
@@ -49,7 +49,7 @@ fn strip_unc_prefix(p: PathBuf) -> PathBuf {
     p
 }
 
-fn command_line(exe: &PathBuf, profile: &str) -> Vec<u16> {
+fn command_line(exe: &Path, profile: &str) -> Vec<u16> {
     let mut s: Vec<u16> = format!("\"{}\" restore \"{profile}\"", exe.display())
         .encode_utf16()
         .collect();

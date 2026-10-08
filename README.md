@@ -109,6 +109,20 @@ ____
   
   - ``save-res nome_do_perfil LARGURAxALTURA`` salva os ícones na resolução passada, se caso precisar por exemplo, 1920x1080.
 
+- ``DesktopORZ hide-icons``
+  
+  - ``hide-icons on <segundos> [--kb] [--mou] [-include-cursor] [-include-taskbar]`` Oculta os ícones após o tempo de inatividade informado, restaurando-os ao detectar atividade do teclado (--kb) e/ou mouse (--mou). Sem flags de fonte, ambos são monitorados.
+  
+  - Com a flag ``-include-cursor`` o cursor do mouse também é ocultado junto com os ícones (mesmo timeout e fontes de atividade); ao detectar atividade, o cursor é restaurado.
+  
+  - Com a flag ``-include-taskbar``, além de ocultar a barra de tarefas, as janelas abertas são expandidas para a resolução física total do monitor (SW_RESTORE + SetWindowPos em tela cheia); ao detectar atividade, elas são restauradas para a área útil padrão (SW_MAXIMIZE).
+  
+  - Exemplo: ``DesktopORZ hide-icons on 5 --kb --mou -include-cursor -include-taskbar``
+  
+  - ``hide-icons status`` Mostra a configuração atual.
+  
+  - ``hide-icons off`` Desativa o monitoramento.
+
 
 
 Projeto Brasileiro 🇧🇷

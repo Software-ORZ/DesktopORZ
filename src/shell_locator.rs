@@ -122,12 +122,7 @@ pub fn refresh_desktop() -> Result<()> {
     }
 
     unsafe {
-        SHChangeNotify(
-            SHCNE_ASSOCCHANGED,
-            SHCNF_IDLIST | SHCNF_FLUSH,
-            None,
-            None,
-        );
+        SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST | SHCNF_FLUSH, None, None);
     }
     Ok(())
 }
