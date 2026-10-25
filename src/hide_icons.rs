@@ -27,8 +27,9 @@ use crate::taskbar_hide::TaskbarHider;
 use crate::window_expand::WindowExpander;
 
 use windows::core::w;
-use windows::Win32::Foundation::WAIT_EVENT;
-use windows::Win32::Foundation::{HMODULE, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{HMODULE, LPARAM, LRESULT, POINT, WAIT_EVENT, WPARAM};
+use windows::Win32::System::SystemInformation::GetTickCount;
+
 use windows::Win32::System::LibraryLoader::{
     GetModuleHandleExW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
     GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
@@ -38,8 +39,10 @@ use windows::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_CREATE_KEY_DISPOSITION, REG_DWORD,
     REG_OPTION_NON_VOLATILE, REG_SAM_FLAGS, REG_SZ,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, DispatchMessageW, IsWindowVisible, MsgWaitForMultipleObjectsEx,
+    CallNextHookEx, DispatchMessageW, GetCursorPos, IsWindowVisible,
+    MsgWaitForMultipleObjectsEx,
     PeekMessageW, SetWindowsHookExW, ShowWindow, TranslateMessage, UnhookWindowsHookEx, HHOOK, MSG,
     MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT, SW_HIDE, SW_SHOW, WH_KEYBOARD_LL, WH_MOUSE_LL,
 };
@@ -553,6 +556,21 @@ fn now_ms() -> u64 {
     wall_ms + instant.elapsed().as_millis() as u64
 }
 
+fn system_idle_millis() -> Option<u64> {
+    unsafe {
+        let mut lii = LASTINPUTINFO {
+            cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32,
+            dwTime: 0,
+        };
+        if GetLastInputInfo(&mut lii).as_bool() {
+            let tick = GetTickCount();
+            let idle_ms = tick.wrapping_sub(lii.dwTime);
+            return Some(idle_ms as u64);
+        }
+    }
+    None
+}
+
 /// Callback comum aos hooks `WH_MOUSE_LL` e `WH_KEYBOARD_LL`: rearma o
 /// timestamp de atividade e passa o evento adiante (nunca bloqueia input).
 /// Se o cursor estiver oculto, restaura-o IMEDIATAMENTE (no-op atômico quando
@@ -686,6 +704,7 @@ pub fn run(
         &mut icons_hidden,
         &mut taskbar,
         &mut expander,
+        source,
         include_cursor,
         include_taskbar,
     );
@@ -707,10 +726,15 @@ fn monitor_loop(
     icons_hidden: &mut bool,
     taskbar: &mut TaskbarHider,
     expander: &mut WindowExpander,
+    source: InputSource,
     include_cursor: bool,
     include_taskbar: bool,
 ) -> Result<String, String> {
     let mut msg = MSG::default();
+    let mut last_cursor_pos = POINT::default();
+    unsafe {
+        let _ = GetCursorPos(&mut last_cursor_pos);
+    }
     // Momento da última checagem de ociosidade: garante a cadência de
     // ~POLL_INTERVAL mesmo quando o loop acorda várias vezes seguidas por
     // eventos de input, evitando varreduras no registro a cada mensagem.
@@ -724,7 +748,7 @@ fn monitor_loop(
         unsafe {
             let wait = MsgWaitForMultipleObjectsEx(
                 None,
-                POLL_INTERVAL.as_millis() as u32,
+                if *icons_hidden { 50 } else { POLL_INTERVAL.as_millis() as u32 },
                 QS_ALLINPUT,
                 MWMO_INPUTAVAILABLE,
             );
@@ -779,7 +803,8 @@ fn monitor_loop(
         // Checagem de ociosidade apenas na cadência do POLL_INTERVAL; eventos
         // frequentes de input não fazem o loop consultar o registro toda hora.
         let now = now_ms();
-        if now.saturating_sub(last_check_ms) < POLL_INTERVAL.as_millis() as u64 {
+        let check_cadence_ms = if *icons_hidden { 50 } else { POLL_INTERVAL.as_millis() as u64 };
+        if now.saturating_sub(last_check_ms) < check_cadence_ms {
             continue;
         }
         last_check_ms = now;
@@ -831,6 +856,34 @@ fn monitor_loop(
             }
             LAST_ACTIVITY_MS.store(now, Ordering::Relaxed);
             continue;
+        }
+
+        let mut current_cursor_pos = POINT::default();
+        let mouse_moved = unsafe { GetCursorPos(&mut current_cursor_pos) }.is_ok()
+            && current_cursor_pos != last_cursor_pos;
+        if mouse_moved {
+            last_cursor_pos = current_cursor_pos;
+            if source.watches_mouse() {
+                LAST_ACTIVITY_MS.store(now, Ordering::Relaxed);
+                if include_cursor {
+                    cursor::restore_system_cursor();
+                }
+            }
+        }
+
+        if let Some(idle_system_ms) = system_idle_millis() {
+            let system_activity_ms = now.saturating_sub(idle_system_ms);
+            let relevant_input = match source {
+                InputSource::Both => true,
+                InputSource::Mouse => mouse_moved,
+                InputSource::Keyboard => !mouse_moved,
+            };
+            if relevant_input {
+                LAST_ACTIVITY_MS.fetch_max(system_activity_ms, Ordering::Relaxed);
+                if idle_system_ms < check_cadence_ms && include_cursor {
+                    cursor::restore_system_cursor();
+                }
+            }
         }
 
         let idle_for =

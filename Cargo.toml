@@ -1,6 +1,6 @@
 [package]
 name = "desktoporz"
-version = "0.2.8"
+version = "0.2.9"
 edition = "2021"
 description = "Open source DesktopOK clone: save and restore Windows desktop icon layouts"
 license = "MIT"
@@ -36,6 +36,7 @@ windows = { version = "0.58", features = [
     "Win32_System_Registry",
     "Win32_System_LibraryLoader",
     "Win32_System_Console",
+    "Win32_System_SystemInformation",
     "Win32_Security",
 ] }
 serde = { version = "1.0", features = ["derive"] }
