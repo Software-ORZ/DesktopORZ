@@ -809,6 +809,30 @@ fn monitor_loop(
             return Ok(t("hide_icons.run_stopped"));
         }
 
+        if crate::fullscreen::is_fullscreen_or_game_active() {
+            if *icons_hidden {
+                if include_cursor {
+                    cursor::restore_system_cursor();
+                }
+                set_icons_visible(true);
+                *icons_hidden = false;
+                daemon_log("tela cheia ou jogo detectado: elementos restaurados");
+                if include_taskbar && taskbar.is_hidden() {
+                    if let Err(e) = taskbar.show() {
+                        daemon_log(&format!("falha ao restaurar a barra de tarefas: {e}"));
+                    }
+                    if expander.is_expanded() {
+                        let restauradas = expander.restore_all();
+                        daemon_log(&format!(
+                            "tela cheia/jogo: {restauradas} janelas restauradas à área útil"
+                        ));
+                    }
+                }
+            }
+            LAST_ACTIVITY_MS.store(now, Ordering::Relaxed);
+            continue;
+        }
+
         let idle_for =
             Duration::from_millis(now.saturating_sub(LAST_ACTIVITY_MS.load(Ordering::Relaxed)));
         let just_active = idle_for < POLL_INTERVAL;

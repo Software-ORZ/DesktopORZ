@@ -170,7 +170,7 @@ fn is_expandable(hwnd: HWND) -> bool {
             return false;
         }
         let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
-        if ex_style & WS_EX_TOOLWINDOW.0 != 0 {
+        if ex_style & WS_EX_TOOLWINDOW.0 != 0 || crate::fullscreen::is_window_fullscreen(hwnd) {
             return false;
         }
         true

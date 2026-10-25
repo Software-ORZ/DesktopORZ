@@ -20,6 +20,7 @@
 
 pub mod config;
 pub mod cursor;
+pub mod fullscreen;
 pub mod hide_icons;
 pub mod i18n;
 pub mod layout;
