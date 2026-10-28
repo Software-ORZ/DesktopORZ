@@ -834,29 +834,6 @@ fn monitor_loop(
             return Ok(t("hide_icons.run_stopped"));
         }
 
-        if crate::fullscreen::is_fullscreen_or_game_active() {
-            if *icons_hidden {
-                if include_cursor {
-                    cursor::restore_system_cursor();
-                }
-                set_icons_visible(true);
-                *icons_hidden = false;
-                daemon_log("tela cheia ou jogo detectado: elementos restaurados");
-                if include_taskbar && taskbar.is_hidden() {
-                    if let Err(e) = taskbar.show() {
-                        daemon_log(&format!("falha ao restaurar a barra de tarefas: {e}"));
-                    }
-                    if expander.is_expanded() {
-                        let restauradas = expander.restore_all();
-                        daemon_log(&format!(
-                            "tela cheia/jogo: {restauradas} janelas restauradas à área útil"
-                        ));
-                    }
-                }
-            }
-            LAST_ACTIVITY_MS.store(now, Ordering::Relaxed);
-            continue;
-        }
 
         let mut current_cursor_pos = POINT::default();
         let mouse_moved = unsafe { GetCursorPos(&mut current_cursor_pos) }.is_ok()
@@ -916,6 +893,10 @@ fn monitor_loop(
                 }
             }
         } else if !*icons_hidden && idle_for >= timeout {
+            if crate::fullscreen::is_fullscreen_or_game_active() {
+                LAST_ACTIVITY_MS.store(now, Ordering::Relaxed);
+                continue;
+            }
             if include_cursor {
                 match cursor::hide_system_cursor() {
                     Ok(()) => daemon_log("cursor do sistema ocultado"),

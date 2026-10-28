@@ -26,8 +26,8 @@ use windows::Win32::UI::Shell::{
     SHQueryUserNotificationState, QUNS_BUSY, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetClassNameW, GetDesktopWindow, GetForegroundWindow, GetShellWindow, GetWindowRect,
-    IsIconic, IsWindow, IsWindowVisible,
+    GetClassNameW, GetDesktopWindow, GetForegroundWindow, GetShellWindow, GetWindowLongW,
+    GetWindowRect, IsIconic, IsWindow, IsWindowVisible, GWL_STYLE, WS_CAPTION,
 };
 
 const STEAM_KEY: windows::core::PCWSTR = w!("Software\\Valve\\Steam");
@@ -94,6 +94,10 @@ pub fn is_window_fullscreen(hwnd: HWND) -> bool {
             return false;
         }
         if is_shell_or_desktop_window(hwnd) {
+            return false;
+        }
+        let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+        if (style & WS_CAPTION.0) == WS_CAPTION.0 {
             return false;
         }
         let mut window_rect = RECT::default();
