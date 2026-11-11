@@ -13,6 +13,10 @@ fn default_language() -> String {
 pub struct CliConfig {
     #[serde(default = "default_language")]
     pub language: String,
+    /// Idioma escolhido para os textos da interface gráfica (`langs/ui_langs`).
+    /// Quando ausente, a interface segue o `language` do CLI.
+    #[serde(default)]
+    pub ui_language: Option<String>,
     #[serde(default)]
     pub startup: Option<StartupMirror>,
     #[serde(default)]
@@ -33,6 +37,7 @@ impl Default for CliConfig {
     fn default() -> Self {
         Self {
             language: default_language(),
+            ui_language: None,
             startup: None,
             wait_drive: None,
             hide_icons: None,
@@ -120,6 +125,16 @@ pub fn set_language(language: &str) -> Result<(), String> {
     let mut config = load_or_create_config();
     config.language = language.to_string();
     save_config(&config)
+}
+
+/// Idioma dos textos da interface: `ui_language` quando definido; caso
+/// contrário, o idioma do CLI.
+pub fn get_ui_language() -> String {
+    let config = load_or_create_config();
+    match config.ui_language {
+        Some(language) if !language.trim().is_empty() => language,
+        _ => config.language,
+    }
 }
 
 pub fn get_startup() -> Option<StartupMirror> {

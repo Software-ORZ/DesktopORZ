@@ -13,17 +13,30 @@ fn main() {
     let langs_dir = exe_dir.join("langs");
     fs::create_dir_all(&langs_dir).expect("falha ao criar pasta langs");
 
-    for entry in fs::read_dir("langs").expect("falha ao ler pasta langs") {
-        let path = entry.expect("entrada inválida em langs").path();
+    // Textos do CLI: `langs/*.json`.
+    copy_json_files(&PathBuf::from("langs"), &langs_dir);
+    // Textos da interface: `langs/ui_langs/*.json`.
+    copy_json_files(
+        &PathBuf::from("langs").join("ui_langs"),
+        &langs_dir.join("ui_langs"),
+    );
+
+    embed_version_info();
+}
+
+/// Copia os `.json` de `src` para `dest`, criando a pasta de destino.
+fn copy_json_files(src: &PathBuf, dest: &PathBuf) {
+    fs::create_dir_all(dest).unwrap_or_else(|e| panic!("falha ao criar {}: {e}", dest.display()));
+    for entry in fs::read_dir(src).unwrap_or_else(|e| panic!("falha ao ler {}: {e}", src.display()))
+    {
+        let path = entry.expect("entrada inválida").path();
         if path.extension().and_then(|e| e.to_str()) == Some("json") {
             println!("cargo:rerun-if-changed={}", path.display());
-            let dest = langs_dir.join(path.file_name().unwrap());
-            fs::copy(&path, &dest)
+            let target = dest.join(path.file_name().unwrap());
+            fs::copy(&path, &target)
                 .unwrap_or_else(|e| panic!("falha ao copiar {}: {e}", path.display()));
         }
     }
-
-    embed_version_info();
 }
 
 /// Embute um recurso VERSIONINFO nos executáveis do pacote

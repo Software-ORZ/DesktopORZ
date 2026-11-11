@@ -18,16 +18,17 @@ use std::thread;
 use std::time::UNIX_EPOCH;
 
 use crate::config::CliConfig;
+use crate::i18n::{ui_t, ui_t_args};
 use crate::layout;
 use crate::shell_locator;
 use crate::types::DesktopProfile;
 
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW, CreatePen,
     CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect,
-    InvalidateRect, RoundRect, SelectObject, SetBkMode, SetTextColor,
+    GetTextExtentPoint32W, InvalidateRect, RoundRect, SelectObject, SetBkMode, SetTextColor,
     CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_CHARSET, DEFAULT_PITCH, DT_CENTER,
     DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_RIGHT, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK,
     FF_DONTCARE, FW_BOLD, FW_NORMAL, FW_SEMIBOLD, HDC, HFONT,
@@ -303,9 +304,9 @@ impl GuiState {
             startup_profile: String::new(),
             wait_drive_enabled: false,
             wait_drive_profile: String::new(),
-            selected_lang: "pt-br".to_string(),
+            selected_lang: crate::config::get_ui_language(),
             close_to_tray: false,
-            exec_status: "Pronto.".to_string(),
+            exec_status: ui_t("status.ready"),
             exec_status_ok: None,
             pending_jobs: 0,
             data_loaded: false,
@@ -345,7 +346,8 @@ impl GuiState {
     fn execute_cli_action(&mut self, args: &[&str]) {
         let owned: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
         let cmd_str = format!("DesktopORZ {}", owned.join(" "));
-        self.set_status(&format!("⏳ Em execução: {cmd_str}"), None);
+        let message = ui_t_args("status.running", &[("command", &cmd_str)]);
+        self.set_status(&message, None);
         self.pending_jobs += 1;
         dispatch_job(Job::Command { args: owned });
     }
@@ -353,7 +355,7 @@ impl GuiState {
     /// Pede uma recarga de dados/status às worker threads (não bloqueia a UI).
     fn refresh_all_data(&mut self, log_refresh: bool) {
         if log_refresh {
-            self.exec_status = "⏳ Sincronizando dados e status...".to_string();
+            self.exec_status = ui_t("status.syncing");
             self.exec_status_ok = None;
         }
         dispatch_job(Job::Refresh { log_refresh });
@@ -362,13 +364,14 @@ impl GuiState {
     /// Restaura o perfil selecionado direto no desktop, em segundo plano.
     fn restore_selected(&mut self) {
         let Some(name) = self.selected_profile.clone() else {
-            self.notify("⚠ Selecione um perfil antes de restaurar.");
+            self.notify(&ui_t("messages.need_profile_restore"));
             return;
         };
         // Uma restauração nova invalida a anterior: só a última pedida aplica
         // o layout, em vez das duas ficarem se alternando nos ícones.
         let token = RESTORE_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
-        self.set_status(&format!("⏳ Restaurando '{name}'..."), None);
+        let message = ui_t_args("status.restoring", &[("name", &name)]);
+        self.set_status(&message, None);
         self.pending_jobs += 1;
         dispatch_job(Job::Restore { name, token });
     }
@@ -385,6 +388,13 @@ impl GuiState {
         self.close_to_tray = enabled;
         self.pending_jobs += 1;
         dispatch_job(Job::SaveCloseToTray { enabled });
+    }
+
+    /// Aplica o idioma escolhido na aba Idioma & Sistema (interface e CLI).
+    fn save_selected_language(&mut self) {
+        let lang = self.selected_lang.clone();
+        self.pending_jobs += 1;
+        dispatch_job(Job::SaveUiLanguage { lang });
     }
 
     /// Liga/desliga a ocultação usando a configuração já carregada
@@ -429,16 +439,16 @@ impl GuiState {
                     .unwrap_or("");
                 if ok {
                     let text = if summary.is_empty() {
-                        "✔ Comando concluído com sucesso".to_string()
+                        ui_t("status.command_ok")
                     } else {
-                        format!("✔ {summary}")
+                        ui_t_args("status.command_ok_summary", &[("summary", summary)])
                     };
                     self.set_status(&text, Some(true));
                 } else {
                     let text = if summary.is_empty() {
-                        "✖ Erro na execução".to_string()
+                        ui_t("status.command_error")
                     } else {
-                        format!("✖ {summary}")
+                        ui_t_args("status.command_error_summary", &[("summary", summary)])
                     };
                     self.set_status(&text, Some(false));
                 }
@@ -456,14 +466,17 @@ impl GuiState {
                     return;
                 }
                 match moved {
-                    Ok(count) => self.set_status(
-                        &format!("✔ Perfil '{name}' restaurado ({count} ícones movidos)"),
-                        Some(true),
-                    ),
-                    Err(error) => self.set_status(
-                        &format!("✖ Falha ao restaurar '{name}': {error}"),
-                        Some(false),
-                    ),
+                    Ok(count) => {
+                        let count = count.to_string();
+                        let text =
+                            ui_t_args("status.restore_ok", &[("name", &name), ("count", &count)]);
+                        self.set_status(&text, Some(true));
+                    }
+                    Err(error) => {
+                        let text =
+                            ui_t_args("status.restore_error", &[("name", &name), ("error", &error)]);
+                        self.set_status(&text, Some(false));
+                    }
                 }
                 self.refresh_all_data(false);
             }
@@ -472,20 +485,32 @@ impl GuiState {
                 if let Err(error) = result {
                     // Não deu para gravar: volta ao tema que está no arquivo.
                     self.dark_mode = !dark;
-                    self.set_status(
-                        &format!("✖ Não foi possível salvar o tema: {error}"),
-                        Some(false),
-                    );
+                    let text = ui_t_args("status.theme_save_error", &[("error", &error)]);
+                    self.set_status(&text, Some(false));
                 }
             }
             JobResult::CloseToTraySaved { enabled, result } => {
                 self.pending_jobs = self.pending_jobs.saturating_sub(1);
                 if let Err(error) = result {
                     self.close_to_tray = !enabled;
-                    self.set_status(
-                        &format!("✖ Não foi possível salvar a preferência: {error}"),
-                        Some(false),
-                    );
+                    let text = ui_t_args("status.preference_save_error", &[("error", &error)]);
+                    self.set_status(&text, Some(false));
+                }
+            }
+            JobResult::UiLanguageSaved { lang, result } => {
+                self.pending_jobs = self.pending_jobs.saturating_sub(1);
+                match result {
+                    Ok(()) => {
+                        // Recarrega os dicionários antes de reportar o novo idioma.
+                        crate::i18n::set_ui_language(&lang);
+                        self.selected_lang = lang.clone();
+                        let text = ui_t_args("status.language_saved", &[("language", &lang)]);
+                        self.set_status(&text, Some(true));
+                    }
+                    Err(error) => {
+                        let text = ui_t_args("status.language_save_error", &[("error", &error)]);
+                        self.set_status(&text, Some(false));
+                    }
                 }
             }
             JobResult::Snapshot(snapshot, log_refresh) => self.apply_snapshot(snapshot, log_refresh),
@@ -516,7 +541,7 @@ impl GuiState {
         self.data_loaded = true;
 
         if log_refresh {
-            self.set_status("✔ Dados e status sincronizados", Some(true));
+            self.set_status(&ui_t("status.synced"), Some(true));
         }
     }
 
@@ -562,13 +587,12 @@ impl GuiState {
         }
 
         if self.startup_profile.is_empty() || !self.profiles.contains_key(&self.startup_profile) {
-            self.startup_profile = names.first().cloned().unwrap_or_else(|| "Nenhum".to_string());
+            self.startup_profile = names.first().cloned().unwrap_or_default();
         }
         if self.wait_drive_profile.is_empty()
             || !self.profiles.contains_key(&self.wait_drive_profile)
         {
-            self.wait_drive_profile =
-                names.first().cloned().unwrap_or_else(|| "Nenhum".to_string());
+            self.wait_drive_profile = names.first().cloned().unwrap_or_default();
         }
     }
 
@@ -633,9 +657,15 @@ impl GuiState {
                 && !(low.contains("disabled") || low.contains("desativad"));
         }
 
-        if !cfg.language.is_empty() {
-            self.selected_lang = cfg.language;
-        }
+        // A aba Idioma & Sistema escolhe o idioma da interface; sem ele a
+        // interface acompanha o idioma do CLI.
+        self.selected_lang = cfg
+            .ui_language
+            .as_deref()
+            .filter(|language| !language.is_empty())
+            .unwrap_or(cfg.language.as_str())
+            .to_string();
+        crate::i18n::set_ui_language(&self.selected_lang);
 
         // Tema salvo pelo usuário na interface (ou pelo seletor da aba de
         // configurações); o CLI preserva o campo ao regravar o arquivo.
@@ -677,8 +707,8 @@ impl GuiState {
     /// Devolve `false` quando não há perfil válido e nada foi despachado.
     fn apply_startup_on(&mut self) -> bool {
         let prof = self.startup_profile.clone();
-        if prof.is_empty() || prof == "Nenhum" {
-            self.notify("⚠ Crie ou selecione um perfil válido antes de ativar a inicialização.");
+        if prof.is_empty() {
+            self.notify(&ui_t("messages.need_profile_startup"));
             return false;
         }
         self.execute_cli_action(&["startup", "on", &prof]);
@@ -688,8 +718,8 @@ impl GuiState {
     /// Devolve `false` quando não há perfil válido e nada foi despachado.
     fn apply_drive_on(&mut self) -> bool {
         let prof = self.wait_drive_profile.clone();
-        if prof.is_empty() || prof == "Nenhum" {
-            self.notify("⚠ Crie ou selecione um perfil válido antes de ativar o Wait-Drive.");
+        if prof.is_empty() {
+            self.notify(&ui_t("messages.need_profile_drive"));
             return false;
         }
         let timeout_clean = self.drive_timeout_input.trim().to_string();
@@ -704,7 +734,7 @@ impl GuiState {
     fn cycle_profile(&self, current: &str, forward: bool) -> String {
         let names: Vec<String> = self.profiles.keys().cloned().collect();
         if names.is_empty() {
-            return "Nenhum".to_string();
+            return String::new();
         }
         let idx = names.iter().position(|n| n == current).unwrap_or(0);
         let next_idx = if forward {
@@ -881,7 +911,7 @@ fn save_cli_config(bin_path: Option<&Path>, cfg: &CliConfig) -> Result<(), Strin
         .find(|p| p.is_file())
         .cloned()
         .or_else(|| candidates.first().cloned())
-        .ok_or_else(|| "config.json não localizado".to_string())?;
+        .ok_or_else(|| ui_t("errors.config_not_found"))?;
     let json = serde_json::to_string_pretty(cfg).map_err(|e| format!("{e}"))?;
     fs::write(&path, json).map_err(|e| format!("{e}"))
 }
@@ -902,9 +932,18 @@ fn save_close_to_tray_preference(enabled: bool) -> Result<(), String> {
     save_cli_config(binary.as_deref(), &cfg)
 }
 
+/// Persiste o idioma da interface e mantém o CLI no mesmo idioma.
+fn save_ui_language_preference(lang: &str) -> Result<(), String> {
+    let binary = find_desktoporz_binary();
+    let mut cfg = read_cli_config(binary.as_deref());
+    cfg.ui_language = Some(lang.to_string());
+    cfg.language = lang.to_string();
+    save_cli_config(binary.as_deref(), &cfg)
+}
+
 fn run_cli_command(bin_path: Option<&Path>, args: &[&str]) -> (bool, String) {
     let Some(bin) = bin_path else {
-        return (false, "Executável DesktopORZ.exe não encontrado.".to_string());
+        return (false, ui_t("errors.binary_not_found"));
     };
     let work_dir = bin.parent().unwrap_or_else(|| Path::new("."));
     match Command::new(bin)
@@ -928,7 +967,10 @@ fn run_cli_command(bin_path: Option<&Path>, args: &[&str]) -> (bool, String) {
             }
             (out.status.success(), combined)
         }
-        Err(e) => (false, format!("Falha ao executar DesktopORZ: {e}")),
+        Err(e) => (
+            false,
+            ui_t_args("errors.run_failed", &[("error", &e.to_string())]),
+        ),
     }
 }
 
@@ -953,6 +995,8 @@ enum Job {
     SaveTheme { dark: bool },
     /// Grava a preferência de fechar para a bandeja no `config.json`.
     SaveCloseToTray { enabled: bool },
+    /// Grava o idioma da interface no `config.json` e recarrega os textos.
+    SaveUiLanguage { lang: String },
     /// Recarrega configuração, status dos serviços e resolução da tela.
     Refresh { log_refresh: bool },
 }
@@ -978,6 +1022,10 @@ enum JobResult {
     ThemeSaved { dark: bool, result: Result<(), String> },
     CloseToTraySaved {
         enabled: bool,
+        result: Result<(), String>,
+    },
+    UiLanguageSaved {
+        lang: String,
         result: Result<(), String>,
     },
     Snapshot(DataSnapshot, bool),
@@ -1071,6 +1119,13 @@ fn worker_loop(receiver: Arc<Mutex<Receiver<Job>>>) {
                 let result = save_close_to_tray_preference(enabled);
                 JobResult::CloseToTraySaved { enabled, result }
             }
+            Job::SaveUiLanguage { lang } => {
+                let _guard = COMMAND_LOCK
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let result = save_ui_language_preference(&lang);
+                JobResult::UiLanguageSaved { lang, result }
+            }
             Job::Refresh { log_refresh } => JobResult::Snapshot(collect_snapshot(), log_refresh),
         };
 
@@ -1109,9 +1164,9 @@ fn load_profile_from_disk(name: &str) -> Result<DesktopProfile, String> {
             continue;
         };
         return serde_json::from_str::<DesktopProfile>(&text)
-            .map_err(|e| format!("perfil inválido ({e})"));
+            .map_err(|e| ui_t_args("profiles.invalid_profile", &[("error", &e.to_string())]));
     }
-    Err(format!("perfil '{name}' não encontrado"))
+    Err(ui_t_args("profiles.not_found", &[("name", name)]))
 }
 
 /// Aplica o layout direto no desktop, na worker thread e sem subprocesso.
@@ -1143,7 +1198,7 @@ fn wake_ui_thread() {
 // ============================================================================
 fn format_timestamp(ts: u64) -> String {
     if ts == 0 {
-        return "Data desc.".to_string();
+        return ui_t("time.unknown");
     }
     // Ajusta para UTC-4 (horário local aproximado)
     let local_secs = ts.saturating_sub(4 * 3600);
@@ -1315,6 +1370,41 @@ fn draw_checkbox(
     );
 }
 
+/// Texto do perfil para exibição; perfis vazios viram o "Nenhum" traduzido.
+fn profile_label(profile: &str) -> String {
+    if profile.is_empty() {
+        ui_t("common.none")
+    } else {
+        profile.to_string()
+    }
+}
+
+/// "Ativar"/"Desativar" traduzido conforme o estado atual do recurso.
+fn toggle_action_label(enabled: bool) -> String {
+    if enabled {
+        ui_t("common.deactivate")
+    } else {
+        ui_t("common.activate")
+    }
+}
+
+/// Largura em pixels do texto na fonte informada, para os rótulos traduzidos
+/// das abas caberem sem serem cortados.
+fn measure_text_width(hdc: HDC, text: &str, font: HFONT) -> i32 {
+    unsafe {
+        let old_font = SelectObject(hdc, font);
+        let wide: Vec<u16> = text.encode_utf16().collect();
+        let mut size = SIZE::default();
+        let ok = GetTextExtentPoint32W(hdc, &wide, &mut size);
+        SelectObject(hdc, old_font);
+        if ok.as_bool() {
+            size.cx
+        } else {
+            0
+        }
+    }
+}
+
 // ============================================================================
 // RENDERIZAÇÃO COMPLETA DA INTERFACE
 // ============================================================================
@@ -1352,21 +1442,21 @@ fn render_gui(hdc: HDC, width: i32, height: i32, st: &mut GuiState) {
     );
     draw_text_in(
         hdc,
-        "Gerenciador de Layouts e Ícones do Windows (Rust GUI)",
+        &ui_t("header.subtitle"),
         make_rect(20, 34, 420, 56),
         f_small,
         pal.text_muted,
-        DT_LEFT.0 | DT_VCENTER.0 | DT_SINGLELINE.0,
+        DT_LEFT.0 | DT_VCENTER.0 | DT_SINGLELINE.0 | DT_END_ELLIPSIS.0,
     );
 
     // Botão de Tema no canto superior direito
     let theme_btn_rect = make_rect(width - 125, 18, width - 20, 46);
     let theme_hovered = st.hovered_id == Some(HitId::ThemeToggle);
-    let theme_txt = if st.dark_mode {
-        "🌙 Tema: Dark"
+    let theme_txt = ui_t(if st.dark_mode {
+        "header.theme_dark"
     } else {
-        "☀️ Tema: Light"
-    };
+        "header.theme_light"
+    });
     draw_round_box(
         hdc,
         theme_btn_rect,
@@ -1376,7 +1466,7 @@ fn render_gui(hdc: HDC, width: i32, height: i32, st: &mut GuiState) {
     );
     draw_text_in(
         hdc,
-        theme_txt,
+        &theme_txt,
         theme_btn_rect,
         f_small_bold,
         pal.text_primary,
@@ -1389,12 +1479,15 @@ fn render_gui(hdc: HDC, width: i32, height: i32, st: &mut GuiState) {
 
     // Badges de Status no Header
     let mut bx = width - 135;
+    let wait_profile = profile_label(&st.wait_drive_profile);
+    let startup_profile = profile_label(&st.startup_profile);
+    let hide_seconds = st.hide_seconds.to_string();
     let badges = [
         (
             if st.wait_drive_enabled {
-                format!("● Wait-Drive: Ativo ({})", st.wait_drive_profile)
+                ui_t_args("header.badge_wait_active", &[("profile", &wait_profile)])
             } else {
-                "○ Wait-Drive: Inativo".to_string()
+                ui_t("header.badge_wait_inactive")
             },
             if st.wait_drive_enabled {
                 pal.success
@@ -1405,9 +1498,9 @@ fn render_gui(hdc: HDC, width: i32, height: i32, st: &mut GuiState) {
         ),
         (
             if st.hide_icons_enabled {
-                format!("● Ocultar: Ativo ({}s)", st.hide_seconds)
+                ui_t_args("header.badge_hide_active", &[("seconds", &hide_seconds)])
             } else {
-                "○ Ocultar: Inativo".to_string()
+                ui_t("header.badge_hide_inactive")
             },
             if st.hide_icons_enabled {
                 pal.success
@@ -1418,9 +1511,12 @@ fn render_gui(hdc: HDC, width: i32, height: i32, st: &mut GuiState) {
         ),
         (
             if st.startup_enabled {
-                format!("● Startup: Ativo ({})", st.startup_profile)
+                ui_t_args(
+                    "header.badge_startup_active",
+                    &[("profile", &startup_profile)],
+                )
             } else {
-                "○ Startup: Inativo".to_string()
+                ui_t("header.badge_startup_inactive")
             },
             if st.startup_enabled {
                 pal.success
@@ -1431,9 +1527,9 @@ fn render_gui(hdc: HDC, width: i32, height: i32, st: &mut GuiState) {
         ),
         (
             if st.binary_path.is_some() {
-                "● Binário OK".to_string()
+                ui_t("header.binary_ok")
             } else {
-                "● Binário Ausente".to_string()
+                ui_t("header.binary_missing")
             },
             if st.binary_path.is_some() {
                 pal.success
@@ -1467,16 +1563,14 @@ fn render_gui(hdc: HDC, width: i32, height: i32, st: &mut GuiState) {
     let tabs_y = 74;
     let tabs_h = 34;
     let tabs = [
-        (ActiveTab::Profiles, "📁 Perfis & Área de Trabalho", 230),
-        (
-            ActiveTab::Automations,
-            "⚙️ Automações (Ocultar, Startup, Nuvem)",
-            280,
-        ),
-        (ActiveTab::Settings, "🌐 Idioma & Sistema", 180),
+        (ActiveTab::Profiles, ui_t("tabs.profiles")),
+        (ActiveTab::Automations, ui_t("tabs.automations")),
+        (ActiveTab::Settings, ui_t("tabs.settings")),
     ];
     let mut tx = 16;
-    for (tab_enum, tab_label, tab_w) in tabs {
+    for (tab_enum, tab_label) in tabs {
+        // A largura acompanha o texto para os rótulos traduzidos caberem.
+        let tab_w = (measure_text_width(hdc, &tab_label, f_sub_bold) + 44).max(140);
         let tr = make_rect(tx, tabs_y, tx + tab_w, tabs_y + tabs_h);
         let is_active = st.active_tab == tab_enum;
         let is_hov = st.hovered_id == Some(HitId::Tab(tab_enum));
@@ -1495,7 +1589,7 @@ fn render_gui(hdc: HDC, width: i32, height: i32, st: &mut GuiState) {
         draw_round_box(hdc, tr, bg, if is_active { pal.primary } else { pal.border }, 8);
         draw_text_in(
             hdc,
-            tab_label,
+            &tab_label,
             tr,
             f_sub_bold,
             fg,
@@ -1586,7 +1680,7 @@ fn render_gui(hdc: HDC, width: i32, height: i32, st: &mut GuiState) {
     draw_button(
         hdc,
         btn_ref_r,
-        "🔄 Atualizar Tudo",
+        &ui_t("status.refresh"),
         f_small_bold,
         pal.bg_elevated,
         pal.border,
@@ -1633,7 +1727,7 @@ fn render_profiles_tab(
 
     draw_text_in(
         hdc,
-        "💾 Salvar Layout Atual:",
+        &ui_t("profiles.save_title"),
         make_rect(top_bar.left + 14, top_bar.top, top_bar.left + 185, top_bar.bottom),
         f_sub_bold,
         pal.text_primary,
@@ -1667,10 +1761,7 @@ fn render_profiles_tab(
         6,
     );
     let (inp_text, inp_col) = if st.new_profile_input.is_empty() && !is_inp_focus {
-        (
-            "Digite o nome do novo perfil (ex: PC, Notebook, Monitor_Externo)".to_string(),
-            pal.text_muted,
-        )
+        (ui_t("profiles.name_placeholder"), pal.text_muted)
     } else if is_inp_focus {
         (format!("{}|", st.new_profile_input), pal.text_primary)
     } else {
@@ -1692,7 +1783,7 @@ fn render_profiles_tab(
     draw_button(
         hdc,
         save_btn_r,
-        "Gravar Posições Atuais",
+        &ui_t("profiles.save_button"),
         f_sub_bold,
         pal.primary,
         pal.primary_hover,
@@ -1719,7 +1810,7 @@ fn render_profiles_tab(
     // --- Coluna Esquerda: Lista de Perfis Armazenados ---
     draw_text_in(
         hdc,
-        "Perfis Armazenados",
+        &ui_t("profiles.stored_title"),
         make_rect(left_col.left + 14, left_col.top + 10, left_col.right - 14, left_col.top + 34),
         f_sec,
         pal.text_primary,
@@ -1733,13 +1824,13 @@ fn render_profiles_tab(
 
     if st.profiles.is_empty() {
         let empty_text = if st.data_loaded {
-            "Nenhum perfil salvo ainda.\nDigite um nome acima e clique em 'Gravar Posições Atuais'."
+            ui_t("profiles.empty")
         } else {
-            "⏳ Carregando perfis do disco..."
+            ui_t("profiles.loading")
         };
         draw_text_in(
             hdc,
-            empty_text,
+            &empty_text,
             make_rect(left_col.left + 16, list_top + 30, left_col.right - 16, list_top + 110),
             f_body,
             pal.text_muted,
@@ -1788,12 +1879,14 @@ fn render_profiles_tab(
             );
 
             let dt_str = format_timestamp(entry.profile.timestamp_utc);
-            let meta = format!(
-                "{}x{}  •  {} ícones  •  {}",
-                entry.profile.resolution.width,
-                entry.profile.resolution.height,
-                entry.profile.icons.len(),
-                dt_str
+            let meta = ui_t_args(
+                "profiles.card_meta",
+                &[
+                    ("width", &entry.profile.resolution.width.to_string()),
+                    ("height", &entry.profile.resolution.height.to_string()),
+                    ("count", &entry.profile.icons.len().to_string()),
+                    ("date", &dt_str),
+                ],
             );
             draw_text_in(
                 hdc,
@@ -1825,23 +1918,27 @@ fn render_profiles_tab(
 
     if let Some(entry) = selected_entry {
         let dt_str = format_timestamp(entry.profile.timestamp_utc);
+        let details_title = ui_t_args("profiles.details_title", &[("name", &entry.name)]);
         draw_text_in(
             hdc,
-            &format!("Perfil: {}", entry.name),
+            &details_title,
             make_rect(right_col.left + 14, right_col.top + 10, right_col.right - 14, right_col.top + 32),
             f_sec,
             pal.text_primary,
             DT_LEFT.0 | DT_VCENTER.0 | DT_SINGLELINE.0,
         );
+        let details_meta = ui_t_args(
+            "profiles.details_meta",
+            &[
+                ("width", &entry.profile.resolution.width.to_string()),
+                ("height", &entry.profile.resolution.height.to_string()),
+                ("count", &entry.profile.icons.len().to_string()),
+                ("date", &dt_str),
+            ],
+        );
         draw_text_in(
             hdc,
-            &format!(
-                "Resolução: {}x{}  |  Total de Ícones: {}  |  Salvo em: {}",
-                entry.profile.resolution.width,
-                entry.profile.resolution.height,
-                entry.profile.icons.len(),
-                dt_str
-            ),
+            &details_meta,
             make_rect(right_col.left + 14, right_col.top + 32, right_col.right - 14, right_col.top + 52),
             f_small,
             pal.text_muted,
@@ -1853,7 +1950,10 @@ fn render_profiles_tab(
         draw_button(
             hdc,
             btn_rest_r,
-            &format!("⚡ RESTAURAR ÍCONES DE '{}'", entry.name.to_uppercase()),
+            &ui_t_args(
+                "profiles.restore_button",
+                &[("name", &entry.name.to_uppercase())],
+            ),
             f_sub_bold,
             pal.success,
             pal.success_hover,
@@ -1877,7 +1977,7 @@ fn render_profiles_tab(
         draw_button(
             hdc,
             btn_upd_r,
-            "🔄 Atualizar Posições (profile-update)",
+            &ui_t("profiles.update_button"),
             f_small_bold,
             pal.primary,
             pal.primary_hover,
@@ -1894,7 +1994,7 @@ fn render_profiles_tab(
         draw_button(
             hdc,
             btn_res_r,
-            "📐 Gravar Resolução Atual (save-res)",
+            &ui_t("profiles.save_res_button"),
             f_small_bold,
             pal.primary,
             pal.primary_hover,
@@ -1911,7 +2011,7 @@ fn render_profiles_tab(
         draw_button(
             hdc,
             btn_del_r,
-            "🗑️ Excluir",
+            &ui_t("profiles.delete_button"),
             f_small_bold,
             pal.danger,
             pal.danger_hover,
@@ -1931,7 +2031,7 @@ fn render_profiles_tab(
 
         draw_text_in(
             hdc,
-            "Ícones salvos:",
+            &ui_t("profiles.icons_title"),
             make_rect(tbl_box.left + 10, tbl_box.top + 6, tbl_box.left + 105, tbl_box.top + 32),
             f_small_bold,
             pal.text_primary,
@@ -1952,7 +2052,7 @@ fn render_profiles_tab(
             5,
         );
         let (flt_txt, flt_col) = if st.icon_filter_input.is_empty() && !is_flt_focus {
-            ("Filtrar por nome...".to_string(), pal.text_muted)
+            (ui_t("profiles.filter_placeholder"), pal.text_muted)
         } else if is_flt_focus {
             (format!("{}|", st.icon_filter_input), pal.text_primary)
         } else {
@@ -1991,7 +2091,7 @@ fn render_profiles_tab(
         if filtered.is_empty() {
             draw_text_in(
                 hdc,
-                "Nenhum ícone encontrado para o filtro atual.",
+                &ui_t("profiles.no_icons"),
                 make_rect(tbl_box.left + 10, rows_top + 16, tbl_box.right - 10, rows_top + 44),
                 f_small,
                 pal.text_muted,
@@ -2024,7 +2124,7 @@ fn render_profiles_tab(
     } else {
         draw_text_in(
             hdc,
-            "Nenhum perfil selecionado",
+            &ui_t("profiles.no_selection"),
             make_rect(right_col.left + 14, right_col.top + 20, right_col.right - 14, right_col.top + 48),
             f_sec,
             pal.text_muted,
@@ -2065,16 +2165,23 @@ fn render_automations_tab(
     // ------------------------------------------------------------------------
     draw_text_in(
         hdc,
-        "👁️ Ocultar Ícones por Inatividade",
+        &ui_t("automations.hide_title"),
         make_rect(card_hide.left + 16, card_hide.top + 12, card_hide.right - 130, card_hide.top + 36),
         f_sec,
         pal.text_primary,
         DT_LEFT.0 | DT_VCENTER.0 | DT_SINGLELINE.0,
     );
     let (hide_st_txt, hide_st_col) = if st.hide_icons_enabled {
-        (format!("● ATIVO ({}s)", st.hide_seconds), pal.success)
+        let detail = ui_t_args(
+            "automations.seconds",
+            &[("seconds", &st.hide_seconds.to_string())],
+        );
+        (
+            ui_t_args("automations.active", &[("detail", &detail)]),
+            pal.success,
+        )
     } else {
-        ("● DESATIVADO".to_string(), pal.text_muted)
+        (ui_t("automations.inactive"), pal.text_muted)
     };
     draw_text_in(
         hdc,
@@ -2087,7 +2194,7 @@ fn render_automations_tab(
 
     draw_text_in(
         hdc,
-        "Oculta os ícones do desktop quando não houver atividade do usuário, restaurando-os instantaneamente ao mexer o mouse ou digitar.",
+        &ui_t("automations.hide_desc"),
         make_rect(card_hide.left + 16, card_hide.top + 38, card_hide.right - 16, card_hide.top + 74),
         f_small,
         pal.text_muted,
@@ -2098,7 +2205,7 @@ fn render_automations_tab(
     let sl_y = card_hide.top + 82;
     draw_text_in(
         hdc,
-        "Tempo de Inatividade:",
+        &ui_t("automations.inactivity_label"),
         make_rect(card_hide.left + 16, sl_y, card_hide.left + 165, sl_y + 28),
         f_body,
         pal.text_primary,
@@ -2158,7 +2265,10 @@ fn render_automations_tab(
 
     draw_text_in(
         hdc,
-        &format!("{} seg", st.hide_seconds),
+        &ui_t_args(
+            "automations.seconds",
+            &[("seconds", &st.hide_seconds.to_string())],
+        ),
         make_rect(btn_inc_r.right + 10, sl_y, card_hide.right - 12, sl_y + 28),
         f_sub_bold,
         pal.primary,
@@ -2169,7 +2279,7 @@ fn render_automations_tab(
     let src_y = sl_y + 34;
     draw_text_in(
         hdc,
-        "Fontes de Atividade:",
+        &ui_t("automations.sources_label"),
         make_rect(card_hide.left + 16, src_y, card_hide.left + 165, src_y + 26),
         f_body,
         pal.text_primary,
@@ -2180,7 +2290,7 @@ fn render_automations_tab(
     draw_checkbox(
         hdc,
         chk_kb_r,
-        "Teclado (--kb)",
+        &ui_t("automations.keyboard"),
         st.hide_kb,
         st.hovered_id == Some(HitId::ToggleKb),
         f_small,
@@ -2195,7 +2305,7 @@ fn render_automations_tab(
     draw_checkbox(
         hdc,
         chk_mou_r,
-        "Mouse (--mou)",
+        &ui_t("automations.mouse"),
         st.hide_mou,
         st.hovered_id == Some(HitId::ToggleMou),
         f_small,
@@ -2210,7 +2320,7 @@ fn render_automations_tab(
     let ext_y = src_y + 30;
     draw_text_in(
         hdc,
-        "Recursos Avançados:",
+        &ui_t("automations.advanced_label"),
         make_rect(card_hide.left + 16, ext_y, card_hide.left + 165, ext_y + 24),
         f_body,
         pal.text_primary,
@@ -2221,7 +2331,7 @@ fn render_automations_tab(
     draw_checkbox(
         hdc,
         chk_cur_r,
-        "Ocultar Cursor (-include-cursor)",
+        &ui_t("automations.hide_cursor"),
         st.hide_cursor,
         st.hovered_id == Some(HitId::ToggleCursor),
         f_small,
@@ -2236,7 +2346,7 @@ fn render_automations_tab(
     draw_checkbox(
         hdc,
         chk_tb_r,
-        "Ocultar Barra de Tarefas (-include-taskbar)",
+        &ui_t("automations.hide_taskbar"),
         st.hide_taskbar,
         st.hovered_id == Some(HitId::ToggleTaskbar),
         f_small,
@@ -2254,15 +2364,16 @@ fn render_automations_tab(
         card_hide.right - 16,
         card_hide.bottom - 12,
     );
+    let hide_seconds = st.hide_seconds.to_string();
     let (hide_btn_txt, hide_bg, hide_hov) = if st.hide_icons_enabled {
         (
-            format!("⏹ Desativar Ocultação Automática (Ativo: {}s)", st.hide_seconds),
+            ui_t_args("automations.hide_on", &[("seconds", &hide_seconds)]),
             pal.danger,
             pal.danger_hover,
         )
     } else {
         (
-            format!("▶ Ativar Ocultação Automática ({}s)", st.hide_seconds),
+            ui_t_args("automations.hide_off", &[("seconds", &hide_seconds)]),
             pal.success,
             pal.success_hover,
         )
@@ -2288,16 +2399,20 @@ fn render_automations_tab(
     // ------------------------------------------------------------------------
     draw_text_in(
         hdc,
-        "🚀 Inicialização com o Windows",
+        &ui_t("automations.startup_title"),
         make_rect(card_startup.left + 16, card_startup.top + 12, card_startup.right - 140, card_startup.top + 36),
         f_sec,
         pal.text_primary,
         DT_LEFT.0 | DT_VCENTER.0 | DT_SINGLELINE.0,
     );
+    let startup_profile_name = profile_label(&st.startup_profile);
     let (st_lbl_txt, st_lbl_col) = if st.startup_enabled {
-        (format!("● ATIVO ({})", st.startup_profile), pal.success)
+        (
+            ui_t_args("automations.active", &[("detail", &startup_profile_name)]),
+            pal.success,
+        )
     } else {
-        ("● DESATIVADO".to_string(), pal.text_muted)
+        (ui_t("automations.inactive"), pal.text_muted)
     };
     draw_text_in(
         hdc,
@@ -2310,7 +2425,7 @@ fn render_automations_tab(
 
     draw_text_in(
         hdc,
-        "Restaura a disposição dos ícones automaticamente sempre que o computador for ligado ou após fazer login no Windows.",
+        &ui_t("automations.startup_desc"),
         make_rect(card_startup.left + 16, card_startup.top + 38, card_startup.right - 16, card_startup.top + 78),
         f_small,
         pal.text_muted,
@@ -2320,7 +2435,7 @@ fn render_automations_tab(
     let sel_y = card_startup.top + 96;
     draw_text_in(
         hdc,
-        "Perfil para Inicialização:",
+        &ui_t("automations.startup_profile_label"),
         make_rect(card_startup.left + 16, sel_y, card_startup.left + 190, sel_y + 32),
         f_body,
         pal.text_primary,
@@ -2351,7 +2466,7 @@ fn render_automations_tab(
     draw_round_box(hdc, mid_st_r, pal.bg_input, pal.border, 6);
     draw_text_in(
         hdc,
-        &format!("📁 {}", st.startup_profile),
+        &format!("📁 {}", profile_label(&st.startup_profile)),
         mid_st_r,
         f_sub_bold,
         pal.text_primary,
@@ -2387,18 +2502,18 @@ fn render_automations_tab(
     );
     let (st_btn_txt, st_bg, st_hov) = if st.startup_enabled {
         (
-            format!(
-                "⏹ Desativar Inicialização com o Windows (Perfil: {})",
-                st.startup_profile
+            ui_t_args(
+                "automations.startup_on",
+                &[("profile", &startup_profile_name)],
             ),
             pal.danger,
             pal.danger_hover,
         )
     } else {
         (
-            format!(
-                "▶ Ativar no Início do Windows (Perfil: {})",
-                st.startup_profile
+            ui_t_args(
+                "automations.startup_off",
+                &[("profile", &startup_profile_name)],
             ),
             pal.success,
             pal.success_hover,
@@ -2425,16 +2540,20 @@ fn render_automations_tab(
     // ------------------------------------------------------------------------
     draw_text_in(
         hdc,
-        "☁️ Sincronização em Nuvem (Google Drive / Wait-Drive)",
+        &ui_t("automations.drive_title"),
         make_rect(card_drive.left + 16, card_drive.top + 10, card_drive.right - 160, card_drive.top + 34),
         f_sec,
         pal.text_primary,
         DT_LEFT.0 | DT_VCENTER.0 | DT_SINGLELINE.0,
     );
+    let drive_profile_name = profile_label(&st.wait_drive_profile);
     let (dr_lbl_txt, dr_lbl_col) = if st.wait_drive_enabled {
-        (format!("● ATIVO ({})", st.wait_drive_profile), pal.success)
+        (
+            ui_t_args("automations.active", &[("detail", &drive_profile_name)]),
+            pal.success,
+        )
     } else {
-        ("● DESATIVADO".to_string(), pal.text_muted)
+        (ui_t("automations.inactive"), pal.text_muted)
     };
     draw_text_in(
         hdc,
@@ -2447,7 +2566,7 @@ fn render_automations_tab(
 
     draw_text_in(
         hdc,
-        "Se a pasta Desktop for sincronizada em nuvem (Google Drive), aguarda a sincronização completar antes de reorganizar os ícones.",
+        &ui_t("automations.drive_desc"),
         make_rect(card_drive.left + 16, card_drive.top + 34, card_drive.right - 16, card_drive.top + 56),
         f_small,
         pal.text_muted,
@@ -2457,7 +2576,7 @@ fn render_automations_tab(
     let dc_y = card_drive.bottom - 46;
     draw_text_in(
         hdc,
-        "Perfil:",
+        &ui_t("automations.drive_profile_label"),
         make_rect(card_drive.left + 16, dc_y, card_drive.left + 64, dc_y + 34),
         f_body,
         pal.text_primary,
@@ -2487,7 +2606,7 @@ fn render_automations_tab(
     draw_round_box(hdc, dp_mid, pal.bg_input, pal.border, 6);
     draw_text_in(
         hdc,
-        &format!("📁 {}", st.wait_drive_profile),
+        &format!("📁 {}", profile_label(&st.wait_drive_profile)),
         dp_mid,
         f_sub_bold,
         pal.text_primary,
@@ -2517,7 +2636,7 @@ fn render_automations_tab(
     // Timeout (segundos)
     draw_text_in(
         hdc,
-        "Timeout (seg):",
+        &ui_t("automations.timeout_label"),
         make_rect(dp_next.right + 16, dc_y, dp_next.right + 115, dc_y + 34),
         f_body,
         pal.text_primary,
@@ -2593,22 +2712,25 @@ fn render_automations_tab(
     // Botão Único e Dinâmico: Wait-Drive
     let btn_dr_r = make_rect(dt_inc.right + 16, dc_y, card_drive.right - 16, dc_y + 34);
     let t_disp = if st.drive_timeout_input.trim().is_empty() {
-        "sem limite".to_string()
+        ui_t("automations.timeout_none")
     } else {
         format!("{}s", st.drive_timeout_input.trim())
     };
     let (dr_btn_txt, dr_bg, dr_hov) = if st.wait_drive_enabled {
         (
-            format!(
-                "⏹ Desativar Wait-Drive (Ativo: {}, {})",
-                st.wait_drive_profile, t_disp
+            ui_t_args(
+                "automations.drive_on",
+                &[("profile", &drive_profile_name), ("timeout", &t_disp)],
             ),
             pal.danger,
             pal.danger_hover,
         )
     } else {
         (
-            format!("▶ Ativar Wait-Drive (Perfil: {})", st.wait_drive_profile),
+            ui_t_args(
+                "automations.drive_off",
+                &[("profile", &drive_profile_name)],
+            ),
             pal.success,
             pal.success_hover,
         )
@@ -2648,7 +2770,7 @@ fn render_settings_tab(
 
     draw_text_in(
         hdc,
-        "Preferências e Sistema",
+        &ui_t("settings.title"),
         make_rect(area.left + 20, area.top + 16, area.right - 20, area.top + 42),
         f_sec,
         pal.text_primary,
@@ -2659,7 +2781,7 @@ fn render_settings_tab(
     let lang_y = area.top + 56;
     draw_text_in(
         hdc,
-        "Idioma do CLI:",
+        &ui_t("settings.language_label"),
         make_rect(area.left + 20, lang_y, area.left + 220, lang_y + 32),
         f_body,
         pal.text_primary,
@@ -2704,7 +2826,7 @@ fn render_settings_tab(
     draw_button(
         hdc,
         btn_save_lang,
-        "Salvar Idioma",
+        &ui_t("settings.language_save"),
         f_sub_bold,
         pal.success,
         pal.success_hover,
@@ -2721,7 +2843,7 @@ fn render_settings_tab(
     let theme_y = lang_y + 44;
     draw_text_in(
         hdc,
-        "Tema da interface:",
+        &ui_t("settings.theme_label"),
         make_rect(area.left + 20, theme_y, area.left + 220, theme_y + 32),
         f_body,
         pal.text_primary,
@@ -2743,7 +2865,7 @@ fn render_settings_tab(
     draw_button(
         hdc,
         btn_dark,
-        "🌙 Dark",
+        &ui_t("settings.theme_dark"),
         f_sub_bold,
         dark_bg,
         dark_bg,
@@ -2758,7 +2880,7 @@ fn render_settings_tab(
     draw_button(
         hdc,
         btn_light,
-        "☀️ Light",
+        &ui_t("settings.theme_light"),
         f_sub_bold,
         light_bg,
         light_bg,
@@ -2775,7 +2897,7 @@ fn render_settings_tab(
     let close_y = theme_y + 44;
     draw_text_in(
         hdc,
-        "Ao fechar a janela:",
+        &ui_t("settings.close_label"),
         make_rect(area.left + 20, close_y, area.left + 220, close_y + 32),
         f_body,
         pal.text_primary,
@@ -2797,7 +2919,7 @@ fn render_settings_tab(
     draw_button(
         hdc,
         btn_quit,
-        "Encerrar programa",
+        &ui_t("settings.close_quit"),
         f_sub_bold,
         quit_bg,
         quit_bg,
@@ -2812,7 +2934,7 @@ fn render_settings_tab(
     draw_button(
         hdc,
         btn_tray,
-        "Ficar na bandeja",
+        &ui_t("settings.close_tray"),
         f_sub_bold,
         tray_bg,
         tray_bg,
@@ -2829,7 +2951,7 @@ fn render_settings_tab(
     let info_y = lang_y + 140;
     draw_text_in(
         hdc,
-        "Executável do DesktopORZ:",
+        &ui_t("settings.binary_label"),
         make_rect(area.left + 20, info_y, area.left + 220, info_y + 28),
         f_body,
         pal.text_primary,
@@ -2839,7 +2961,7 @@ fn render_settings_tab(
         .binary_path
         .as_ref()
         .map(|p| p.display().to_string())
-        .unwrap_or_else(|| "Não encontrado".to_string());
+        .unwrap_or_else(|| ui_t("settings.binary_missing"));
     draw_text_in(
         hdc,
         &bin_str,
@@ -2850,16 +2972,19 @@ fn render_settings_tab(
     );
 
     let res_txt = if st.display_resolution.0 > 0 && st.display_resolution.1 > 0 {
-        format!(
-            "{}x{} pixels",
-            st.display_resolution.0, st.display_resolution.1
+        ui_t_args(
+            "settings.resolution_value",
+            &[
+                ("width", &st.display_resolution.0.to_string()),
+                ("height", &st.display_resolution.1.to_string()),
+            ],
         )
     } else {
-        "detectando...".to_string()
+        ui_t("settings.resolution_loading")
     };
     draw_text_in(
         hdc,
-        "Resolução Atual da Tela:",
+        &ui_t("settings.resolution_label"),
         make_rect(area.left + 20, info_y + 36, area.left + 220, info_y + 64),
         f_body,
         pal.text_primary,
@@ -2876,7 +3001,7 @@ fn render_settings_tab(
 
     draw_text_in(
         hdc,
-        "Pastas de Perfis:",
+        &ui_t("settings.profiles_dirs_label"),
         make_rect(area.left + 20, info_y + 72, area.left + 220, info_y + 100),
         f_body,
         pal.text_primary,
@@ -2900,7 +3025,7 @@ fn render_settings_tab(
     draw_button(
         hdc,
         help_btn,
-        "📖 Exibir Ajuda Completa do CLI (help)",
+        &ui_t("settings.cli_help"),
         f_sub_bold,
         pal.primary,
         pal.primary_hover,
@@ -2941,11 +3066,11 @@ fn handle_click(hwnd: HWND, hit: HitId, mouse_x: i32, st: &mut GuiState) {
         HitId::SaveNewProfile => {
             let name = st.new_profile_input.trim().to_string();
             if name.is_empty() {
-                st.notify("⚠ Digite um nome válido para o novo perfil.");
+                st.notify(&ui_t("profiles.name_invalid"));
                 return;
             }
             if name.chars().any(|c| "\\/:*?\"<>|".contains(c)) {
-                st.notify("⚠ O nome do perfil contém caracteres inválidos.");
+                st.notify(&ui_t("profiles.name_invalid_chars"));
                 return;
             }
             st.new_profile_input.clear();
@@ -2972,10 +3097,11 @@ fn handle_click(hwnd: HWND, hit: HitId, mouse_x: i32, st: &mut GuiState) {
         }
         HitId::DeleteSelected => {
             if let Some(name) = st.selected_profile.clone() {
-                let msg: Vec<u16> = format!("Deseja realmente excluir o perfil '{name}'?\0")
+                let question = ui_t_args("profiles.delete_confirm", &[("name", &name)]);
+                let msg: Vec<u16> = format!("{question}\0").encode_utf16().collect();
+                let cap: Vec<u16> = format!("{}\0", ui_t("profiles.delete_title"))
                     .encode_utf16()
                     .collect();
-                let cap: Vec<u16> = "Confirmar Exclusão\0".encode_utf16().collect();
                 let resp = unsafe {
                     MessageBoxW(
                         hwnd,
@@ -2989,7 +3115,7 @@ fn handle_click(hwnd: HWND, hit: HitId, mouse_x: i32, st: &mut GuiState) {
                         let _ = fs::remove_file(d.join(format!("{name}.json")));
                     }
                     let _ = fs::remove_file(project_dir().join(format!("{name}.json")));
-                    st.notify(&format!("🗑️ Perfil '{name}' removido com sucesso."));
+                    st.notify(&ui_t_args("profiles.deleted", &[("name", &name)]));
                     st.selected_profile = None;
                     st.refresh_all_data(false);
                 }
@@ -3088,10 +3214,7 @@ fn handle_click(hwnd: HWND, hit: HitId, mouse_x: i32, st: &mut GuiState) {
         HitId::SelectLang(lang) => {
             st.selected_lang = lang;
         }
-        HitId::SaveLangBtn => {
-            let lang = st.selected_lang.clone();
-            st.execute_cli_action(&["lang", &lang]);
-        }
+        HitId::SaveLangBtn => st.save_selected_language(),
         HitId::ThemeDark => st.set_theme(true),
         HitId::ThemeLight => st.set_theme(false),
         HitId::CloseQuit => st.set_close_to_tray(false),
@@ -3131,58 +3254,54 @@ struct TrayMenuState {
 fn tray_menu_state(st: &GuiState) -> TrayMenuState {
     let mut sources = Vec::new();
     if st.hide_kb {
-        sources.push("teclado");
+        sources.push(ui_t("tray.hide_source_keyboard"));
     }
     if st.hide_mou {
-        sources.push("mouse");
+        sources.push(ui_t("tray.hide_source_mouse"));
     }
     if st.hide_taskbar {
-        sources.push("barra");
+        sources.push(ui_t("tray.hide_source_taskbar"));
     }
     if st.hide_cursor {
-        sources.push("cursor");
+        sources.push(ui_t("tray.hide_source_cursor"));
     }
     let sources = if sources.is_empty() {
-        "sem fontes".to_string()
+        ui_t("tray.hide_sources_none")
     } else {
-        sources.join(" + ")
+        sources.join(&ui_t("tray.hide_source_separator"))
     };
     let selected = st
         .selected_profile
         .clone()
-        .unwrap_or_else(|| "nenhum".to_string());
+        .unwrap_or_else(|| ui_t("common.none"));
+    let seconds = st.hide_seconds.to_string();
 
     TrayMenuState {
-        restore: format!("Restaurar perfil: {selected}"),
+        restore: ui_t_args("tray.restore", &[("profile", &selected)]),
         hide_on: st.hide_icons_enabled,
-        hide: format!(
-            "{} ocultação ({sources}, {}s)",
-            if st.hide_icons_enabled {
-                "Desativar"
-            } else {
-                "Ativar"
-            },
-            st.hide_seconds
+        hide: ui_t_args(
+            "tray.hide",
+            &[
+                ("action", &toggle_action_label(st.hide_icons_enabled)),
+                ("sources", &sources),
+                ("seconds", &seconds),
+            ],
         ),
         drive_on: st.wait_drive_enabled,
-        drive: format!(
-            "{} Wait-Drive ({})",
-            if st.wait_drive_enabled {
-                "Desativar"
-            } else {
-                "Ativar"
-            },
-            st.wait_drive_profile
+        drive: ui_t_args(
+            "tray.wait_drive",
+            &[
+                ("action", &toggle_action_label(st.wait_drive_enabled)),
+                ("profile", &profile_label(&st.wait_drive_profile)),
+            ],
         ),
         startup_on: st.startup_enabled,
-        startup: format!(
-            "{} organizar ao iniciar ({})",
-            if st.startup_enabled {
-                "Desativar"
-            } else {
-                "Ativar"
-            },
-            st.startup_profile
+        startup: ui_t_args(
+            "tray.startup",
+            &[
+                ("action", &toggle_action_label(st.startup_enabled)),
+                ("profile", &profile_label(&st.startup_profile)),
+            ],
         ),
     }
 }
@@ -3249,7 +3368,7 @@ fn show_tray_menu(hwnd: HWND) {
         append_menu_item(menu, TRAY_CMD_WAIT_DRIVE, &labels.drive, labels.drive_on);
         append_menu_item(menu, TRAY_CMD_STARTUP, &labels.startup, labels.startup_on);
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-        append_menu_item(menu, TRAY_CMD_EXIT, "Sair do DesktopORZ", false);
+        append_menu_item(menu, TRAY_CMD_EXIT, &ui_t("tray.exit"), false);
 
         let mut cursor = POINT::default();
         let _ = GetCursorPos(&mut cursor);
@@ -3591,11 +3710,7 @@ fn ensure_elevated() -> Result<bool, String> {
 
         // Retorno <= 32 indica falha (inclusive UAC recusado pelo usuário).
         if launched.0 as isize <= 32 {
-            return Err(
-                "A interface precisa ser executada como administrador para ativar e \
-                 desativar as automações."
-                    .to_string(),
-            );
+            return Err(ui_t("errors.admin_required"));
         }
     }
     // A instância elevada assume daqui; esta encerra em seguida.
@@ -3651,10 +3766,16 @@ pub fn run_gui() -> Result<(), String> {
                 | WS_CLIPCHILDREN.0,
         );
 
+        let window_title = ui_t("window.title");
+        let window_title: Vec<u16> = window_title
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+
         let hwnd = CreateWindowExW(
             Default::default(),
             class_name,
-            w!("DesktopORZ — Gerenciador de Ícones da Área de Trabalho (Rust GUI)"),
+            PCWSTR(window_title.as_ptr()),
             window_style,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
@@ -3665,7 +3786,7 @@ pub fn run_gui() -> Result<(), String> {
             hinstance,
             None,
         )
-        .map_err(|e| format!("Falha ao criar janela: {e}"))?;
+        .map_err(|e| ui_t_args("errors.window_create", &[("error", &e.to_string())]))?;
 
         let _ = ShowWindow(hwnd, SW_SHOW);
 
@@ -3691,7 +3812,7 @@ mod tests {
 
     #[test]
     fn test_format_timestamp_zero() {
-        assert_eq!(format_timestamp(0), "Data desc.");
+        assert_eq!(format_timestamp(0), ui_t("time.unknown"));
     }
 
     #[test]
