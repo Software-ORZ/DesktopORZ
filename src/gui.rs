@@ -7,10 +7,14 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
+use std::os::windows::ffi::OsStrExt;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::thread;
 use std::time::UNIX_EPOCH;
 
 use crate::config::CliConfig;
@@ -18,7 +22,7 @@ use crate::shell_locator;
 use crate::types::DesktopProfile;
 
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{COLORREF, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW, CreatePen,
     CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect,
@@ -28,23 +32,23 @@ use windows::Win32::Graphics::Gdi::{
     FF_DONTCARE, FW_BOLD, FW_NORMAL, FW_SEMIBOLD, HDC, HFONT,
     OUT_DEFAULT_PRECIS, PAINTSTRUCT, PS_SOLID, SRCCOPY, TRANSPARENT,
 };
-use windows::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
-};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
+use windows::Win32::UI::Shell::{IsUserAnAdmin, ShellExecuteW};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetClientRect, GetMessageW, LoadCursorW,
-    MessageBoxW, PostQuitMessage, RegisterClassW, ShowWindow, TranslateMessage, CS_HREDRAW,
-    CS_VREDRAW, CW_USEDEFAULT, IDC_ARROW, IDC_HAND, IDYES, MB_ICONQUESTION, MB_YESNO, MSG,
-    SW_SHOW, WM_CHAR, WM_CREATE, WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN,
+    MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassW, ShowWindow, TranslateMessage,
+    CS_HREDRAW,
+    CS_VREDRAW, CW_USEDEFAULT, IDC_ARROW, IDC_HAND, IDYES, MB_ICONERROR, MB_ICONQUESTION,
+    MB_YESNO, MSG, SW_SHOW, SW_SHOWNORMAL, WM_CHAR, WM_CREATE, WM_DESTROY, WM_ERASEBKGND,
+    WM_KEYDOWN, WM_LBUTTONDOWN,
     WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_SIZE, WNDCLASSW, WS_CLIPCHILDREN,
     WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 };
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
-const CF_UNICODETEXT_VAL: u32 = 13;
+/// Mensagem privada: uma worker thread terminou um job (ver `job_results`).
+const WM_APP_JOB_COMPLETED: u32 = 0x8000;
 
 // ============================================================================
 // PALETA DE CORES IMPECCABLE (DARK & LIGHT)
@@ -173,10 +177,8 @@ enum HitId {
     SelectLang(String),
     SaveLangBtn,
     CliHelpBtn,
-    // Console
+    // Rodapé de status
     RefreshAllBtn,
-    CopyConsoleBtn,
-    ClearConsoleBtn,
 }
 
 #[derive(Clone)]
@@ -220,10 +222,8 @@ struct GuiState {
     // Scroll offsets
     profiles_scroll: i32,
     icons_scroll: i32,
-    console_scroll: i32,
     icons_area_rect: RECT,
     profiles_area_rect: RECT,
-    console_area_rect: RECT,
 
     // Estados dinâmicos das automações
     hide_icons_enabled: bool,
@@ -243,10 +243,14 @@ struct GuiState {
 
     selected_lang: String,
 
-    // Console
+    // Linha de status (rodapé)
     exec_status: String,
     exec_status_ok: Option<bool>,
-    console_lines: Vec<String>,
+
+    // Execução em segundo plano (worker threads) e dados do sistema
+    pending_jobs: usize,
+    data_loaded: bool,
+    display_resolution: (u32, u32),
 
     // Zonas de clique e hover
     hit_zones: Vec<HitZone>,
@@ -255,7 +259,7 @@ struct GuiState {
 
 impl GuiState {
     fn new() -> Self {
-        let mut s = Self {
+        let s = Self {
             dark_mode: true,
             active_tab: ActiveTab::Profiles,
             focused_input: InputField::None,
@@ -267,10 +271,8 @@ impl GuiState {
             drive_timeout_input: "30".to_string(),
             profiles_scroll: 0,
             icons_scroll: 0,
-            console_scroll: 0,
             icons_area_rect: RECT::default(),
             profiles_area_rect: RECT::default(),
-            console_area_rect: RECT::default(),
             hide_icons_enabled: false,
             hide_seconds: 5,
             hide_kb: true,
@@ -286,14 +288,13 @@ impl GuiState {
             selected_lang: "pt-br".to_string(),
             exec_status: "Pronto.".to_string(),
             exec_status_ok: None,
-            console_lines: vec![
-                "DesktopORZ GUI (Rust Native) inicializada com sucesso.".to_string(),
-                "Pronto para gerenciar layouts de ícones e automações sem terminal.".to_string(),
-            ],
+            pending_jobs: 0,
+            data_loaded: false,
+            display_resolution: (0, 0),
             hit_zones: Vec::new(),
             hovered_id: None,
         };
-        s.refresh_all_data(false);
+        // A primeira sincronização roda nas worker threads (ver `run_gui`).
         s
     }
 
@@ -305,51 +306,97 @@ impl GuiState {
         }
     }
 
-    fn append_log(&mut self, text: &str) {
-        for line in text.lines() {
-            self.console_lines.push(line.to_string());
-        }
-        if self.console_lines.len() > 300 {
-            let drain_count = self.console_lines.len() - 300;
-            self.console_lines.drain(0..drain_count);
-        }
-        // Auto-scroll para o fim
-        self.console_scroll = (self.console_lines.len() as i32 - 5).max(0);
+    /// Mostra uma mensagem informativa na linha de status (tom neutro).
+    fn notify(&mut self, message: &str) {
+        self.set_status(message, None);
     }
 
+    fn set_status(&mut self, message: &str, ok: Option<bool>) {
+        let text = message
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .unwrap_or(message);
+        self.exec_status = text.to_string();
+        self.exec_status_ok = ok;
+    }
+
+    /// Enfileira `DesktopORZ.exe <args>` em uma worker thread; a thread de
+    /// renderização apenas registra o pedido e segue desenhando a interface.
     fn execute_cli_action(&mut self, args: &[&str]) {
-        let cmd_str = format!("DesktopORZ {}", args.join(" "));
-        self.append_log("=========================================");
-        self.append_log(&format!("▶ Executando: {cmd_str}"));
-        self.append_log("=========================================");
-
-        sync_profiles_across_dirs();
-
-        let (ok, output) = run_cli_command(self.binary_path.as_deref(), args);
-        if !output.trim().is_empty() {
-            self.append_log(output.trim());
-        }
-        if ok {
-            self.append_log("--- Fim (código 0) ---");
-            self.exec_status = "✔ Comando concluído com sucesso".to_string();
-            self.exec_status_ok = Some(true);
-        } else {
-            self.append_log("--- Fim (erro) ---");
-            self.exec_status = "✖ Erro na execução".to_string();
-            self.exec_status_ok = Some(false);
-        }
-
-        self.refresh_all_data(false);
+        let owned: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
+        let cmd_str = format!("DesktopORZ {}", owned.join(" "));
+        self.set_status(&format!("⏳ Em execução: {cmd_str}"), None);
+        self.pending_jobs += 1;
+        dispatch_job(Job::Command { args: owned });
     }
 
+    /// Pede uma recarga de dados/status às worker threads (não bloqueia a UI).
     fn refresh_all_data(&mut self, log_refresh: bool) {
-        self.binary_path = find_desktoporz_binary();
-        sync_profiles_across_dirs();
-        self.load_profiles_from_disk();
-        self.sync_services_status();
         if log_refresh {
-            self.exec_status = "✔ Dados e status sincronizados".to_string();
-            self.exec_status_ok = Some(true);
+            self.exec_status = "⏳ Sincronizando dados e status...".to_string();
+            self.exec_status_ok = None;
+        }
+        dispatch_job(Job::Refresh { log_refresh });
+    }
+
+    /// Consome um job concluído pelas worker threads (chamado na thread da UI).
+    fn apply_job_result(&mut self, result: JobResult) {
+        match result {
+            JobResult::CommandDone { ok, output } => {
+                self.pending_jobs = self.pending_jobs.saturating_sub(1);
+                let summary = output
+                    .lines()
+                    .map(str::trim)
+                    .find(|line| !line.is_empty())
+                    .unwrap_or("");
+                if ok {
+                    let text = if summary.is_empty() {
+                        "✔ Comando concluído com sucesso".to_string()
+                    } else {
+                        format!("✔ {summary}")
+                    };
+                    self.set_status(&text, Some(true));
+                } else {
+                    let text = if summary.is_empty() {
+                        "✖ Erro na execução".to_string()
+                    } else {
+                        format!("✖ {summary}")
+                    };
+                    self.set_status(&text, Some(false));
+                }
+                // Perfis e status podem ter mudado: recarrega em background.
+                self.refresh_all_data(false);
+            }
+            JobResult::Snapshot(snapshot, log_refresh) => self.apply_snapshot(snapshot, log_refresh),
+        }
+    }
+
+    /// Aplica na UI o retrato coletado por uma worker thread.
+    fn apply_snapshot(&mut self, snapshot: DataSnapshot, log_refresh: bool) {
+        self.binary_path = snapshot.binary_path;
+        if snapshot.resolution.width > 0 && snapshot.resolution.height > 0 {
+            self.display_resolution = (snapshot.resolution.width, snapshot.resolution.height);
+        }
+
+        // Leitura local dos JSONs de perfil (I/O barato, sem subprocessos).
+        self.load_profiles_from_disk();
+
+        // Com um comando em voo o retrato pode estar desatualizado: manter o
+        // estado já refletido nos botões evita que eles voltem sozinhos para
+        // o estado anterior até o comando terminar.
+        if self.pending_jobs == 0 {
+            self.apply_services_snapshot(
+                snapshot.cfg,
+                snapshot.startup_status,
+                snapshot.hide_status,
+                snapshot.drive_status,
+            );
+        }
+        self.data_loaded = true;
+
+        if log_refresh {
+            self.set_status("✔ Dados e status sincronizados", Some(true));
         }
     }
 
@@ -405,13 +452,15 @@ impl GuiState {
         }
     }
 
-    fn sync_services_status(&mut self) {
-        // Garante que o config.json esteja atualizado consultando os módulos/CLI
-        let (_, res_s) = run_cli_command(self.binary_path.as_deref(), &["startup", "status"]);
-        let (_, res_h) = run_cli_command(self.binary_path.as_deref(), &["hide-icons", "status"]);
-        let (_, res_d) = run_cli_command(self.binary_path.as_deref(), &["wait-drive", "status"]);
-
-        let cfg = read_cli_config(self.binary_path.as_deref());
+    /// Aplica o status dos serviços coletado por `collect_snapshot` nas worker
+    /// threads; `res_*` trazem o texto de `startup status` e afins.
+    fn apply_services_snapshot(
+        &mut self,
+        cfg: CliConfig,
+        res_s: String,
+        res_h: String,
+        res_d: String,
+    ) {
 
         // 1. Startup
         if let Some(st) = cfg.startup {
@@ -469,7 +518,7 @@ impl GuiState {
         }
     }
 
-    fn apply_hide_icons_on(&mut self) {
+    fn apply_hide_icons_on(&mut self) -> bool {
         let secs_str = self.hide_seconds.to_string();
         let mut args: Vec<&str> = vec!["hide-icons", "on", &secs_str];
         if self.hide_kb && !self.hide_mou {
@@ -487,22 +536,26 @@ impl GuiState {
             args.push("-include-taskbar");
         }
         self.execute_cli_action(&args);
+        true
     }
 
-    fn apply_startup_on(&mut self) {
+    /// Devolve `false` quando não há perfil válido e nada foi despachado.
+    fn apply_startup_on(&mut self) -> bool {
         let prof = self.startup_profile.clone();
         if prof.is_empty() || prof == "Nenhum" {
-            self.append_log("⚠ Crie ou selecione um perfil válido antes de ativar a inicialização.");
-            return;
+            self.notify("⚠ Crie ou selecione um perfil válido antes de ativar a inicialização.");
+            return false;
         }
         self.execute_cli_action(&["startup", "on", &prof]);
+        true
     }
 
-    fn apply_drive_on(&mut self) {
+    /// Devolve `false` quando não há perfil válido e nada foi despachado.
+    fn apply_drive_on(&mut self) -> bool {
         let prof = self.wait_drive_profile.clone();
         if prof.is_empty() || prof == "Nenhum" {
-            self.append_log("⚠ Crie ou selecione um perfil válido antes de ativar o Wait-Drive.");
-            return;
+            self.notify("⚠ Crie ou selecione um perfil válido antes de ativar o Wait-Drive.");
+            return false;
         }
         let timeout_clean = self.drive_timeout_input.trim().to_string();
         if !timeout_clean.is_empty() && timeout_clean.chars().all(|c| c.is_ascii_digit()) {
@@ -510,6 +563,7 @@ impl GuiState {
         } else {
             self.execute_cli_action(&["wait-drive", "on", &prof]);
         }
+        true
     }
 
     fn cycle_profile(&self, current: &str, forward: bool) -> String {
@@ -706,6 +760,146 @@ fn run_cli_command(bin_path: Option<&Path>, args: &[&str]) -> (bool, String) {
             (out.status.success(), combined)
         }
         Err(e) => (false, format!("Falha ao executar DesktopORZ: {e}")),
+    }
+}
+
+// ============================================================================
+// THREADS DE TRABALHO: execução de comandos fora da thread de renderização
+// ============================================================================
+//
+// A thread principal cuida só da janela (mensagens, layout e pintura). Todo o
+// trabalho pesado — subprocessos do CLI, consulta de status e sincronização de
+// pastas — vai para um pool de worker threads. Cada worker devolve o resultado
+// pela fila `JOB_RESULTS` e acorda a UI com `WM_APP_JOB_COMPLETED`, então nunca
+// existe bloqueio dentro do laço de mensagens.
+
+/// Trabalho despachado da UI para as worker threads.
+enum Job {
+    /// Executa `DesktopORZ.exe <args>` (grava config, mexe no registro etc.).
+    Command { args: Vec<String> },
+    /// Recarrega configuração, status dos serviços e resolução da tela.
+    Refresh { log_refresh: bool },
+}
+
+/// Dados coletados fora da thread da UI, prontos para serem aplicados nela.
+struct DataSnapshot {
+    binary_path: Option<PathBuf>,
+    cfg: CliConfig,
+    startup_status: String,
+    hide_status: String,
+    drive_status: String,
+    resolution: crate::types::Resolution,
+}
+
+/// Resultado de um job, consumido pela thread da UI.
+enum JobResult {
+    CommandDone { ok: bool, output: String },
+    Snapshot(DataSnapshot, bool),
+}
+
+static JOB_TX: OnceLock<Sender<Job>> = OnceLock::new();
+static JOB_RESULTS: OnceLock<Mutex<Vec<JobResult>>> = OnceLock::new();
+static UI_HWND: AtomicIsize = AtomicIsize::new(0);
+/// Serializa as chamadas ao CLI: dois comandos nunca alteram o config.json ao
+/// mesmo tempo, mantendo a ordem em que o usuário os pediu.
+static COMMAND_LOCK: Mutex<()> = Mutex::new(());
+
+/// Quantidade de worker threads (uma fica reservada para a renderização).
+fn command_worker_count() -> usize {
+    thread::available_parallelism()
+        .map(|cores| cores.get().saturating_sub(1))
+        .unwrap_or(2)
+        .clamp(2, 4)
+}
+
+fn job_results() -> &'static Mutex<Vec<JobResult>> {
+    JOB_RESULTS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Sobe o pool de workers na primeira chamada e devolve o canal de entrada.
+fn job_sender() -> &'static Sender<Job> {
+    JOB_TX.get_or_init(|| {
+        let (tx, rx) = mpsc::channel::<Job>();
+        let shared = Arc::new(Mutex::new(rx));
+        for index in 0..command_worker_count() {
+            let shared = Arc::clone(&shared);
+            let _ = thread::Builder::new()
+                .name(format!("desktoporz-worker-{index}"))
+                .spawn(move || worker_loop(shared));
+        }
+        tx
+    })
+}
+
+fn dispatch_job(job: Job) {
+    let _ = job_sender().send(job);
+}
+
+fn worker_loop(receiver: Arc<Mutex<Receiver<Job>>>) {
+    loop {
+        let job = {
+            let guard = match receiver.lock() {
+                Ok(guard) => guard,
+                Err(_) => return,
+            };
+            match guard.recv() {
+                Ok(job) => job,
+                Err(_) => return,
+            }
+        };
+
+        let result = match job {
+            Job::Command { args } => {
+                let _guard = COMMAND_LOCK
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                sync_profiles_across_dirs();
+                let binary = find_desktoporz_binary();
+                let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+                let (ok, output) = run_cli_command(binary.as_deref(), &arg_refs);
+                JobResult::CommandDone { ok, output }
+            }
+            Job::Refresh { log_refresh } => JobResult::Snapshot(collect_snapshot(), log_refresh),
+        };
+
+        if let Ok(mut queue) = job_results().lock() {
+            queue.push(result);
+        }
+        wake_ui_thread();
+    }
+}
+
+/// Consulta perfis, configuração, status dos serviços e resolução.
+fn collect_snapshot() -> DataSnapshot {
+    let binary_path = find_desktoporz_binary();
+    sync_profiles_across_dirs();
+    let (_, startup_status) =
+        run_cli_command(binary_path.as_deref(), &["startup", "status"]);
+    let (_, hide_status) = run_cli_command(binary_path.as_deref(), &["hide-icons", "status"]);
+    let (_, drive_status) = run_cli_command(binary_path.as_deref(), &["wait-drive", "status"]);
+    let cfg = read_cli_config(binary_path.as_deref());
+    DataSnapshot {
+        binary_path,
+        cfg,
+        startup_status,
+        hide_status,
+        drive_status,
+        resolution: shell_locator::current_resolution(),
+    }
+}
+
+fn wake_ui_thread() {
+    let raw = UI_HWND.load(Ordering::Relaxed);
+    if raw == 0 {
+        return;
+    }
+    unsafe {
+        let _ = PostMessageW(
+            HWND(raw as *mut core::ffi::c_void),
+            WM_APP_JOB_COMPLETED,
+            WPARAM(0),
+            LPARAM(0),
+        );
     }
 }
 
@@ -1082,9 +1276,9 @@ fn render_gui(hdc: HDC, width: i32, height: i32, st: &mut GuiState) {
     // ------------------------------------------------------------------------
     // 3. ÁREA CENTRAL DA ABA ATIVA
     // ------------------------------------------------------------------------
-    let console_h = 155;
+    let footer_h = 40;
     let content_top = 116;
-    let content_bottom = (height - console_h - 14).max(content_top + 200);
+    let content_bottom = (height - footer_h - 22).max(content_top + 200);
     let content_rect = make_rect(16, content_top, width - 16, content_bottom);
 
     match st.active_tab {
@@ -1124,13 +1318,11 @@ fn render_gui(hdc: HDC, width: i32, height: i32, st: &mut GuiState) {
     }
 
     // ------------------------------------------------------------------------
-    // 4. CONSOLE & LOG EM TEMPO REAL (RODAPÉ)
+    // 4. LINHA DE STATUS (RODAPÉ)
     // ------------------------------------------------------------------------
-    let con_rect = make_rect(16, content_bottom + 8, width - 16, height - 12);
-    st.console_area_rect = con_rect;
-    draw_round_box(hdc, con_rect, pal.bg_card, pal.border, 8);
+    let status_rect = make_rect(16, height - footer_h - 10, width - 16, height - 10);
+    draw_round_box(hdc, status_rect, pal.bg_card, pal.border, 8);
 
-    // Barra superior do console
     let status_color = match st.exec_status_ok {
         Some(true) => pal.success,
         Some(false) => pal.danger,
@@ -1139,56 +1331,31 @@ fn render_gui(hdc: HDC, width: i32, height: i32, st: &mut GuiState) {
     draw_text_in(
         hdc,
         &st.exec_status,
-        make_rect(con_rect.left + 12, con_rect.top + 6, con_rect.right - 290, con_rect.top + 32),
-        f_sub_bold,
+        make_rect(
+            status_rect.left + 14,
+            status_rect.top,
+            status_rect.right - 172,
+            status_rect.bottom,
+        ),
+        f_small_bold,
         status_color,
         DT_LEFT.0 | DT_VCENTER.0 | DT_SINGLELINE.0 | DT_END_ELLIPSIS.0,
     );
 
-    // Botões do console: Atualizar Tudo, Copiar, Limpar
-    let btn_clear_r = make_rect(con_rect.right - 82, con_rect.top + 6, con_rect.right - 12, con_rect.top + 30);
-    draw_button(
-        hdc,
-        btn_clear_r,
-        "Limpar",
-        f_small_bold,
-        pal.bg_elevated,
-        pal.border,
-        pal.text_primary,
-        st.hovered_id == Some(HitId::ClearConsoleBtn),
-        6,
+    let btn_ref_r = make_rect(
+        status_rect.right - 164,
+        status_rect.top + 7,
+        status_rect.right - 10,
+        status_rect.bottom - 7,
     );
-    st.hit_zones.push(HitZone {
-        rect: btn_clear_r,
-        id: HitId::ClearConsoleBtn,
-    });
-
-    let btn_copy_r = make_rect(con_rect.right - 166, con_rect.top + 6, con_rect.right - 88, con_rect.top + 30);
-    draw_button(
-        hdc,
-        btn_copy_r,
-        "📋 Copiar",
-        f_small_bold,
-        pal.primary,
-        pal.primary_hover,
-        rgb(255, 255, 255),
-        st.hovered_id == Some(HitId::CopyConsoleBtn),
-        6,
-    );
-    st.hit_zones.push(HitZone {
-        rect: btn_copy_r,
-        id: HitId::CopyConsoleBtn,
-    });
-
-    let btn_ref_r = make_rect(con_rect.right - 288, con_rect.top + 6, con_rect.right - 172, con_rect.top + 30);
     draw_button(
         hdc,
         btn_ref_r,
         "🔄 Atualizar Tudo",
         f_small_bold,
-        pal.primary,
-        pal.primary_hover,
-        rgb(255, 255, 255),
+        pal.bg_elevated,
+        pal.border,
+        pal.text_primary,
         st.hovered_id == Some(HitId::RefreshAllBtn),
         6,
     );
@@ -1196,37 +1363,6 @@ fn render_gui(hdc: HDC, width: i32, height: i32, st: &mut GuiState) {
         rect: btn_ref_r,
         id: HitId::RefreshAllBtn,
     });
-
-    // Caixa de texto do console
-    let log_box = make_rect(con_rect.left + 10, con_rect.top + 36, con_rect.right - 10, con_rect.bottom - 8);
-    draw_round_box(hdc, log_box, pal.bg_input, pal.border, 6);
-
-    let line_h = 17;
-    let visible_lines = ((log_box.bottom - log_box.top - 8) / line_h).max(1) as usize;
-    let total_lines = st.console_lines.len();
-    let max_scroll = (total_lines as i32 - visible_lines as i32).max(0);
-    st.console_scroll = st.console_scroll.clamp(0, max_scroll);
-
-    let start_idx = st.console_scroll as usize;
-    let mut ly = log_box.top + 4;
-    for line in st.console_lines.iter().skip(start_idx).take(visible_lines) {
-        let line_color = if line.contains("Error") || line.contains("Erro") || line.contains("✖") {
-            pal.danger
-        } else if line.contains("▶ Executando") {
-            pal.primary
-        } else {
-            pal.text_secondary
-        };
-        draw_text_in(
-            hdc,
-            line,
-            make_rect(log_box.left + 8, ly, log_box.right - 8, ly + line_h),
-            f_mono,
-            line_color,
-            DT_LEFT.0 | DT_VCENTER.0 | DT_SINGLELINE.0 | DT_END_ELLIPSIS.0,
-        );
-        ly += line_h;
-    }
 
     // Libera objetos de fonte GDI
     unsafe {
@@ -1361,9 +1497,14 @@ fn render_profiles_tab(
     let card_gap = 6;
 
     if st.profiles.is_empty() {
+        let empty_text = if st.data_loaded {
+            "Nenhum perfil salvo ainda.\nDigite um nome acima e clique em 'Gravar Posições Atuais'."
+        } else {
+            "⏳ Carregando perfis do disco..."
+        };
         draw_text_in(
             hdc,
-            "Nenhum perfil salvo ainda.\nDigite um nome acima e clique em 'Gravar Posições Atuais'.",
+            empty_text,
             make_rect(left_col.left + 16, list_top + 30, left_col.right - 16, list_top + 110),
             f_body,
             pal.text_muted,
@@ -2365,7 +2506,14 @@ fn render_settings_tab(
         DT_LEFT.0 | DT_VCENTER.0 | DT_SINGLELINE.0 | DT_END_ELLIPSIS.0,
     );
 
-    let res = shell_locator::current_resolution();
+    let res_txt = if st.display_resolution.0 > 0 && st.display_resolution.1 > 0 {
+        format!(
+            "{}x{} pixels",
+            st.display_resolution.0, st.display_resolution.1
+        )
+    } else {
+        "detectando...".to_string()
+    };
     draw_text_in(
         hdc,
         "Resolução Atual da Tela:",
@@ -2376,7 +2524,7 @@ fn render_settings_tab(
     );
     draw_text_in(
         hdc,
-        &format!("{}x{} pixels", res.width, res.height),
+        &res_txt,
         make_rect(area.left + 230, info_y + 36, area.right - 20, info_y + 64),
         f_mono,
         pal.text_muted,
@@ -2424,30 +2572,6 @@ fn render_settings_tab(
 }
 
 // ============================================================================
-// COPIAR PARA CLIPBOARD DO WINDOWS
-// ============================================================================
-fn copy_to_clipboard(hwnd: HWND, text: &str) {
-    unsafe {
-        if OpenClipboard(hwnd).is_err() {
-            return;
-        }
-        let _ = EmptyClipboard();
-        let mut wide: Vec<u16> = text.encode_utf16().collect();
-        wide.push(0);
-        let bytes_len = wide.len() * 2;
-        if let Ok(hmem) = GlobalAlloc(GMEM_MOVEABLE, bytes_len) {
-            let ptr = GlobalLock(hmem);
-            if !ptr.is_null() {
-                std::ptr::copy_nonoverlapping(wide.as_ptr() as *const u8, ptr as *mut u8, bytes_len);
-                let _ = GlobalUnlock(hmem);
-                let _ = SetClipboardData(CF_UNICODETEXT_VAL, HANDLE(hmem.0));
-            }
-        }
-        let _ = CloseClipboard();
-    }
-}
-
-// ============================================================================
 // TRATAMENTO DE EVENTOS E CLIQUES
 // ============================================================================
 fn update_slider_from_mouse(st: &mut GuiState, mouse_x: i32) {
@@ -2473,11 +2597,11 @@ fn handle_click(hwnd: HWND, hit: HitId, mouse_x: i32, st: &mut GuiState) {
         HitId::SaveNewProfile => {
             let name = st.new_profile_input.trim().to_string();
             if name.is_empty() {
-                st.append_log("⚠ Digite um nome válido para o novo perfil.");
+                st.notify("⚠ Digite um nome válido para o novo perfil.");
                 return;
             }
             if name.chars().any(|c| "\\/:*?\"<>|".contains(c)) {
-                st.append_log("⚠ O nome do perfil contém caracteres inválidos.");
+                st.notify("⚠ O nome do perfil contém caracteres inválidos.");
                 return;
             }
             st.new_profile_input.clear();
@@ -2523,7 +2647,7 @@ fn handle_click(hwnd: HWND, hit: HitId, mouse_x: i32, st: &mut GuiState) {
                         let _ = fs::remove_file(d.join(format!("{name}.json")));
                     }
                     let _ = fs::remove_file(project_dir().join(format!("{name}.json")));
-                    st.append_log(&format!("🗑️ Perfil '{name}' removido com sucesso."));
+                    st.notify(&format!("🗑️ Perfil '{name}' removido com sucesso."));
                     st.selected_profile = None;
                     st.refresh_all_data(false);
                 }
@@ -2580,9 +2704,11 @@ fn handle_click(hwnd: HWND, hit: HitId, mouse_x: i32, st: &mut GuiState) {
         }
         HitId::ToggleHideIconsBtn => {
             if st.hide_icons_enabled {
+                // Reflete o clique na hora; o comando só confirma depois.
+                st.hide_icons_enabled = false;
                 st.execute_cli_action(&["hide-icons", "off"]);
-            } else {
-                st.apply_hide_icons_on();
+            } else if st.apply_hide_icons_on() {
+                st.hide_icons_enabled = true;
             }
         }
         HitId::StartupPrevProfile => {
@@ -2599,9 +2725,10 @@ fn handle_click(hwnd: HWND, hit: HitId, mouse_x: i32, st: &mut GuiState) {
         }
         HitId::ToggleStartupBtn => {
             if st.startup_enabled {
+                st.startup_enabled = false;
                 st.execute_cli_action(&["startup", "off"]);
-            } else {
-                st.apply_startup_on();
+            } else if st.apply_startup_on() {
+                st.startup_enabled = true;
             }
         }
         HitId::DrivePrevProfile => {
@@ -2632,9 +2759,10 @@ fn handle_click(hwnd: HWND, hit: HitId, mouse_x: i32, st: &mut GuiState) {
         }
         HitId::ToggleDriveBtn => {
             if st.wait_drive_enabled {
+                st.wait_drive_enabled = false;
                 st.execute_cli_action(&["wait-drive", "off"]);
-            } else {
-                st.apply_drive_on();
+            } else if st.apply_drive_on() {
+                st.wait_drive_enabled = true;
             }
         }
         HitId::SelectLang(lang) => {
@@ -2650,18 +2778,6 @@ fn handle_click(hwnd: HWND, hit: HitId, mouse_x: i32, st: &mut GuiState) {
         HitId::RefreshAllBtn => {
             st.refresh_all_data(true);
         }
-        HitId::CopyConsoleBtn => {
-            let full = st.console_lines.join("\r\n");
-            copy_to_clipboard(hwnd, &full);
-            st.exec_status = "📋 Saída copiada para a área de transferência".to_string();
-            st.exec_status_ok = Some(true);
-        }
-        HitId::ClearConsoleBtn => {
-            st.console_lines.clear();
-            st.console_scroll = 0;
-            st.exec_status = "Pronto.".to_string();
-            st.exec_status_ok = None;
-        }
     }
 }
 
@@ -2675,7 +2791,26 @@ unsafe extern "system" fn wnd_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     match msg {
-        WM_CREATE => LRESULT(0),
+        WM_CREATE => {
+            // Guarda a janela para que as worker threads possam acordar a UI.
+            UI_HWND.store(hwnd.0 as isize, Ordering::Relaxed);
+            LRESULT(0)
+        }
+        m if m == WM_APP_JOB_COMPLETED => {
+            let results: Vec<JobResult> = match job_results().lock() {
+                Ok(mut queue) => queue.drain(..).collect(),
+                Err(_) => Vec::new(),
+            };
+            if !results.is_empty() {
+                if let Ok(mut st) = state().lock() {
+                    for result in results {
+                        st.apply_job_result(result);
+                    }
+                }
+                let _ = InvalidateRect(hwnd, None, false);
+            }
+            LRESULT(0)
+        }
         WM_ERASEBKGND => LRESULT(1), // Evita flicker; pintamos tudo no double buffer
         WM_SIZE => {
             let _ = InvalidateRect(hwnd, None, false);
@@ -2773,9 +2908,7 @@ unsafe extern "system" fn wnd_proc(
                 let in_rect = |r: RECT, p: POINT| {
                     p.x >= r.left && p.x <= r.right && p.y >= r.top && p.y <= r.bottom
                 };
-                if in_rect(st.console_area_rect, pt) {
-                    st.console_scroll = (st.console_scroll + step).max(0);
-                } else if st.active_tab == ActiveTab::Profiles && in_rect(st.icons_area_rect, pt) {
+                if st.active_tab == ActiveTab::Profiles && in_rect(st.icons_area_rect, pt) {
                     st.icons_scroll = (st.icons_scroll + step).max(0);
                 } else if st.active_tab == ActiveTab::Profiles && in_rect(st.profiles_area_rect, pt)
                 {
@@ -2872,8 +3005,74 @@ unsafe extern "system" fn wnd_proc(
     }
 }
 
+/// Garante privilégios de administrador: os comandos do CLI gravam no
+/// registro e na pasta de inicialização do Windows. Se o processo atual não
+/// estiver elevado, relança a si mesmo via UAC e encerra o original.
+fn ensure_elevated() -> Result<(), String> {
+    unsafe {
+        if IsUserAnAdmin().as_bool() {
+            return Ok(());
+        }
+
+        let exe = env::current_exe().map_err(|e| format!("{e}"))?;
+        let exe_wide: Vec<u16> = exe
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        // Mantém o diretório de trabalho (profiles/, config.json) no relançamento.
+        let dir_wide: Vec<u16> = env::current_dir()
+            .ok()
+            .map(|dir| {
+                dir.as_os_str()
+                    .encode_wide()
+                    .chain(std::iter::once(0))
+                    .collect::<Vec<u16>>()
+            })
+            .unwrap_or_else(|| vec![0]);
+
+        let launched = ShellExecuteW(
+            HWND::default(),
+            w!("runas"),
+            PCWSTR(exe_wide.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR(dir_wide.as_ptr()),
+            SW_SHOWNORMAL,
+        );
+
+        // Retorno <= 32 indica falha (inclusive UAC recusado pelo usuário).
+        if launched.0 as isize <= 32 {
+            return Err(
+                "A interface precisa ser executada como administrador para ativar e \
+                 desativar as automações."
+                    .to_string(),
+            );
+        }
+    }
+    // A instância elevada assume daqui; esta fecha em seguida.
+    Ok(())
+}
+
+fn show_error(title: &str, message: &str) {
+    let text: Vec<u16> = message.encode_utf16().chain(std::iter::once(0)).collect();
+    let caption: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        MessageBoxW(
+            HWND::default(),
+            PCWSTR(text.as_ptr()),
+            PCWSTR(caption.as_ptr()),
+            MB_ICONERROR,
+        );
+    }
+}
+
 /// Ponto de entrada público para iniciar a interface gráfica nativa em Rust.
 pub fn run_gui() -> Result<(), String> {
+    if let Err(error) = ensure_elevated() {
+        show_error("DesktopORZ", &error);
+        return Err(error);
+    }
+
     unsafe {
         let hinstance = GetModuleHandleW(None).map_err(|e| format!("{e}"))?;
         let class_name = w!("DesktopORZ_RustGUI_Class");
@@ -2906,6 +3105,13 @@ pub fn run_gui() -> Result<(), String> {
         .map_err(|e| format!("Falha ao criar janela: {e}"))?;
 
         let _ = ShowWindow(hwnd, SW_SHOW);
+
+        // Sobe o pool de workers e agenda a primeira sincronização de dados,
+        // para que a janela apareça imediatamente, sem esperar subprocessos.
+        let _ = job_sender();
+        if let Ok(mut st) = state().lock() {
+            st.refresh_all_data(false);
+        }
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).into() {
