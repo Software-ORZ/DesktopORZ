@@ -81,6 +81,16 @@ const DESKTOP_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
 const DESKTOP_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 pub fn restore_layout(profile: &DesktopProfile) -> Result<usize> {
+    restore_layout_cancellable(profile, || false)
+}
+
+/// Igual a `restore_layout`, mas desiste entre as tentativas quando `superseded`
+/// retorna `true`. Sem isso, uma restauração antiga continua reaplicando o seu
+/// layout por cima de uma nova e os ícones ficam alternando entre os perfis.
+pub fn restore_layout_cancellable<F>(profile: &DesktopProfile, superseded: F) -> Result<usize>
+where
+    F: Fn() -> bool,
+{
     let listview = wait_for_desktop()?;
     let process = shell_locator::open_explorer_process(listview)?;
 
@@ -104,12 +114,21 @@ pub fn restore_layout(profile: &DesktopProfile) -> Result<usize> {
     // primeira aplicação; relemos as posições e reaplicamos os divergentes.
     let mut moved = 0usize;
     for attempt in 0..RESTORE_ATTEMPTS {
+        if superseded() {
+            break;
+        }
         if attempt > 0 {
             sleep(RETRY_DELAY);
+        }
+        if superseded() {
+            break;
         }
 
         let mut divergent = 0usize;
         for icon in icons {
+            if superseded() {
+                break;
+            }
             if let Some(&index) = name_to_index.get(&icon.name) {
                 if attempt > 0 {
                     let (_, current_pos) =

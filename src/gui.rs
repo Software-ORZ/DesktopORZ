@@ -11,7 +11,7 @@ use std::os::windows::ffi::OsStrExt;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -177,6 +177,8 @@ enum HitId {
     // Aba Configurações
     SelectLang(String),
     SaveLangBtn,
+    ThemeDark,
+    ThemeLight,
     CliHelpBtn,
     // Rodapé de status
     RefreshAllBtn,
@@ -347,9 +349,19 @@ impl GuiState {
             self.notify("⚠ Selecione um perfil antes de restaurar.");
             return;
         };
+        // Uma restauração nova invalida a anterior: só a última pedida aplica
+        // o layout, em vez das duas ficarem se alternando nos ícones.
+        let token = RESTORE_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
         self.set_status(&format!("⏳ Restaurando '{name}'..."), None);
         self.pending_jobs += 1;
-        dispatch_job(Job::Restore { name });
+        dispatch_job(Job::Restore { name, token });
+    }
+
+    /// Aplica o tema imediatamente e grava a escolha no `config.json`.
+    fn set_theme(&mut self, dark: bool) {
+        self.dark_mode = dark;
+        self.pending_jobs += 1;
+        dispatch_job(Job::SaveTheme { dark });
     }
 
     /// Consome um job concluído pelas worker threads (chamado na thread da UI).
@@ -380,8 +392,16 @@ impl GuiState {
                 // Perfis e status podem ter mudado: recarrega em background.
                 self.refresh_all_data(false);
             }
-            JobResult::RestoreDone { name, moved } => {
+            JobResult::RestoreDone {
+                name,
+                moved,
+                superseded,
+            } => {
                 self.pending_jobs = self.pending_jobs.saturating_sub(1);
+                // Uma restauração mais nova assumiu: não sobrescreve o status.
+                if superseded {
+                    return;
+                }
                 match moved {
                     Ok(count) => self.set_status(
                         &format!("✔ Perfil '{name}' restaurado ({count} ícones movidos)"),
@@ -393,6 +413,17 @@ impl GuiState {
                     ),
                 }
                 self.refresh_all_data(false);
+            }
+            JobResult::ThemeSaved { dark, result } => {
+                self.pending_jobs = self.pending_jobs.saturating_sub(1);
+                if let Err(error) = result {
+                    // Não deu para gravar: volta ao tema que está no arquivo.
+                    self.dark_mode = !dark;
+                    self.set_status(
+                        &format!("✖ Não foi possível salvar o tema: {error}"),
+                        Some(false),
+                    );
+                }
             }
             JobResult::Snapshot(snapshot, log_refresh) => self.apply_snapshot(snapshot, log_refresh),
         }
@@ -541,6 +572,16 @@ impl GuiState {
 
         if !cfg.language.is_empty() {
             self.selected_lang = cfg.language;
+        }
+
+        // Tema salvo pelo usuário na interface (ou pelo seletor da aba de
+        // configurações); o CLI preserva o campo ao regravar o arquivo.
+        if let Some(theme) = cfg.ui_theme.as_deref() {
+            match theme {
+                "dark" => self.dark_mode = true,
+                "light" => self.dark_mode = false,
+                _ => {}
+            }
         }
     }
 
@@ -741,7 +782,7 @@ fn sync_profiles_across_dirs() {
     }
 }
 
-fn read_cli_config(bin_path: Option<&Path>) -> CliConfig {
+fn config_candidates(bin_path: Option<&Path>) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(bin) = bin_path {
         if let Some(parent) = bin.parent() {
@@ -750,15 +791,39 @@ fn read_cli_config(bin_path: Option<&Path>) -> CliConfig {
     }
     candidates.push(project_dir().join("config.json"));
     candidates.push(PathBuf::from(r"C:\cargo-target\DesktopORZ\release\config.json"));
+    candidates
+}
 
-    for c in candidates {
-        if let Ok(text) = fs::read_to_string(&c) {
+fn read_cli_config(bin_path: Option<&Path>) -> CliConfig {
+    for path in config_candidates(bin_path) {
+        if let Ok(text) = fs::read_to_string(&path) {
             if let Ok(cfg) = serde_json::from_str::<CliConfig>(&text) {
                 return cfg;
             }
         }
     }
     crate::config::load_or_create_config()
+}
+
+/// Grava o `config.json` no mesmo arquivo de onde ele foi lido.
+fn save_cli_config(bin_path: Option<&Path>, cfg: &CliConfig) -> Result<(), String> {
+    let candidates = config_candidates(bin_path);
+    let path = candidates
+        .iter()
+        .find(|p| p.is_file())
+        .cloned()
+        .or_else(|| candidates.first().cloned())
+        .ok_or_else(|| "config.json não localizado".to_string())?;
+    let json = serde_json::to_string_pretty(cfg).map_err(|e| format!("{e}"))?;
+    fs::write(&path, json).map_err(|e| format!("{e}"))
+}
+
+/// Persiste a preferência de tema sem tocar no resto da configuração.
+fn save_theme_preference(dark: bool) -> Result<(), String> {
+    let binary = find_desktoporz_binary();
+    let mut cfg = read_cli_config(binary.as_deref());
+    cfg.ui_theme = Some(if dark { "dark" } else { "light" }.to_string());
+    save_cli_config(binary.as_deref(), &cfg)
 }
 
 fn run_cli_command(bin_path: Option<&Path>, args: &[&str]) -> (bool, String) {
@@ -807,7 +872,9 @@ enum Job {
     Command { args: Vec<String> },
     /// Restaura um perfil de ícones dentro do próprio processo da interface,
     /// sem depender do `DesktopORZ.exe` externo nem do seu diretório atual.
-    Restore { name: String },
+    Restore { name: String, token: usize },
+    /// Grava o tema escolhido na interface dentro do `config.json`.
+    SaveTheme { dark: bool },
     /// Recarrega configuração, status dos serviços e resolução da tela.
     Refresh { log_refresh: bool },
 }
@@ -825,13 +892,21 @@ struct DataSnapshot {
 /// Resultado de um job, consumido pela thread da UI.
 enum JobResult {
     CommandDone { ok: bool, output: String },
-    RestoreDone { name: String, moved: Result<usize, String> },
+    RestoreDone {
+        name: String,
+        moved: Result<usize, String>,
+        superseded: bool,
+    },
+    ThemeSaved { dark: bool, result: Result<(), String> },
     Snapshot(DataSnapshot, bool),
 }
 
 static JOB_TX: OnceLock<Sender<Job>> = OnceLock::new();
 static JOB_RESULTS: OnceLock<Mutex<Vec<JobResult>>> = OnceLock::new();
 static UI_HWND: AtomicIsize = AtomicIsize::new(0);
+/// Geração da restauração em andamento: pedir outra restauração invalida a
+/// anterior, que para de reaplicar o layout dela nos ícones.
+static RESTORE_SEQ: AtomicUsize = AtomicUsize::new(0);
 /// Serializa as chamadas ao CLI: dois comandos nunca alteram o config.json ao
 /// mesmo tempo, mantendo a ordem em que o usuário os pediu.
 static COMMAND_LOCK: Mutex<()> = Mutex::new(());
@@ -891,9 +966,21 @@ fn worker_loop(receiver: Arc<Mutex<Receiver<Job>>>) {
                 let (ok, output) = run_cli_command(binary.as_deref(), &arg_refs);
                 JobResult::CommandDone { ok, output }
             }
-            Job::Restore { name } => {
-                let moved = restore_profile_now(&name);
-                JobResult::RestoreDone { name, moved }
+            Job::Restore { name, token } => {
+                let moved = restore_profile_now(&name, token);
+                let superseded = token != RESTORE_SEQ.load(Ordering::SeqCst);
+                JobResult::RestoreDone {
+                    name,
+                    moved,
+                    superseded,
+                }
+            }
+            Job::SaveTheme { dark } => {
+                let _guard = COMMAND_LOCK
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let result = save_theme_preference(dark);
+                JobResult::ThemeSaved { dark, result }
             }
             Job::Refresh { log_refresh } => JobResult::Snapshot(collect_snapshot(), log_refresh),
         };
@@ -939,10 +1026,12 @@ fn load_profile_from_disk(name: &str) -> Result<DesktopProfile, String> {
 }
 
 /// Aplica o layout direto no desktop, na worker thread e sem subprocesso.
-fn restore_profile_now(name: &str) -> Result<usize, String> {
+/// Aborta assim que outra restauração é pedida (`token` desatualizado).
+fn restore_profile_now(name: &str, token: usize) -> Result<usize, String> {
     let profile = load_profile_from_disk(name)?;
     let _ = shell_locator::refresh_desktop();
-    layout::restore_layout(&profile).map_err(|e| format!("{e}"))
+    let superseded = || token != RESTORE_SEQ.load(Ordering::SeqCst);
+    layout::restore_layout_cancellable(&profile, superseded).map_err(|e| format!("{e}"))
 }
 
 fn wake_ui_thread() {
@@ -2539,8 +2628,62 @@ fn render_settings_tab(
         id: HitId::SaveLangBtn,
     });
 
+    // Tema da interface (persistido no config.json)
+    let theme_y = lang_y + 44;
+    draw_text_in(
+        hdc,
+        "Tema da interface:",
+        make_rect(area.left + 20, theme_y, area.left + 220, theme_y + 32),
+        f_body,
+        pal.text_primary,
+        DT_LEFT.0 | DT_VCENTER.0 | DT_SINGLELINE.0,
+    );
+
+    let btn_dark = make_rect(area.left + 230, theme_y, area.left + 330, theme_y + 32);
+    let btn_light = make_rect(area.left + 338, theme_y, area.left + 438, theme_y + 32);
+    let (dark_bg, dark_fg) = if st.dark_mode {
+        (pal.primary, rgb(255, 255, 255))
+    } else {
+        (pal.bg_elevated, pal.text_primary)
+    };
+    let (light_bg, light_fg) = if st.dark_mode {
+        (pal.bg_elevated, pal.text_primary)
+    } else {
+        (pal.primary, rgb(255, 255, 255))
+    };
+    draw_button(
+        hdc,
+        btn_dark,
+        "🌙 Dark",
+        f_sub_bold,
+        dark_bg,
+        dark_bg,
+        dark_fg,
+        st.hovered_id == Some(HitId::ThemeDark),
+        6,
+    );
+    st.hit_zones.push(HitZone {
+        rect: btn_dark,
+        id: HitId::ThemeDark,
+    });
+    draw_button(
+        hdc,
+        btn_light,
+        "☀️ Light",
+        f_sub_bold,
+        light_bg,
+        light_bg,
+        light_fg,
+        st.hovered_id == Some(HitId::ThemeLight),
+        6,
+    );
+    st.hit_zones.push(HitZone {
+        rect: btn_light,
+        id: HitId::ThemeLight,
+    });
+
     // Informações do Sistema
-    let info_y = lang_y + 52;
+    let info_y = lang_y + 96;
     draw_text_in(
         hdc,
         "Executável do DesktopORZ:",
@@ -2642,7 +2785,8 @@ fn update_slider_from_mouse(st: &mut GuiState, mouse_x: i32) {
 fn handle_click(hwnd: HWND, hit: HitId, mouse_x: i32, st: &mut GuiState) {
     match hit {
         HitId::ThemeToggle => {
-            st.dark_mode = !st.dark_mode;
+            let dark = !st.dark_mode;
+            st.set_theme(dark);
         }
         HitId::Tab(tab) => {
             st.active_tab = tab;
@@ -2827,6 +2971,8 @@ fn handle_click(hwnd: HWND, hit: HitId, mouse_x: i32, st: &mut GuiState) {
             let lang = st.selected_lang.clone();
             st.execute_cli_action(&["lang", &lang]);
         }
+        HitId::ThemeDark => st.set_theme(true),
+        HitId::ThemeLight => st.set_theme(false),
         HitId::CliHelpBtn => {
             st.execute_cli_action(&["help"]);
         }

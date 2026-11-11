@@ -19,6 +19,10 @@ pub struct CliConfig {
     pub wait_drive: Option<WaitDriveMirror>,
     #[serde(default)]
     pub hide_icons: Option<HideIconsMirror>,
+    /// Tema escolhido na interface gráfica (`"dark"` ou `"light"`). O CLI
+    /// ignora o campo, mas o preserva ao regravar o arquivo.
+    #[serde(default)]
+    pub ui_theme: Option<String>,
 }
 
 impl Default for CliConfig {
@@ -28,6 +32,7 @@ impl Default for CliConfig {
             startup: None,
             wait_drive: None,
             hide_icons: None,
+            ui_theme: None,
         }
     }
 }
