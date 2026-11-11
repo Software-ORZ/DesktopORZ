@@ -1,8 +1,10 @@
 [package]
 name = "desktoporz"
-version = "0.3.0"
+version = "0.9.5"
 edition = "2021"
-description = "Open source DesktopOK clone: save and restore Windows desktop icon layouts"
+description = "DesktopORZ"
+repository = "https://github.com/ThainanViniciusKatchan/DesktopORZ"
+authors = ["ThainanViniciusKatchan"]
 license = "MIT"
 include = [
     "src/**/*",
@@ -11,6 +13,12 @@ include = [
     "Cargo.toml",
     "README.md",
 ]
+
+[package.metadata.wix]
+upgrade-guid = "E405F3A0-6765-432B-8499-19F92F144C70"
+path-guid = "9B03144E-958B-4C89-8788-85FA839F7AB3"
+license = false
+eula = false
 
 [[bin]]
 name = "DesktopORZ"
@@ -49,3 +57,28 @@ serde_json = "1.0"
 
 [build-dependencies]
 winresource = "0.1"
+
+# Config for 'dist'
+[workspace.metadata.dist]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.34.0"
+# CI backends to support
+ci = "github"
+# The installers to generate for each app
+installers = ["msi"]
+# Target platforms to build apps for (Rust target-triple syntax)
+targets = ["x86_64-pc-windows-msvc"]
+# The archive format to use for windows builds (defaults .zip)
+windows-archive = ".zip"
+# Whether to auto-include files like READMEs, LICENSEs, and CHANGELOGs (default true)
+auto-includes = false
+# Extra static files to include in each App (path relative to this Cargo.toml's dir)
+include = ["langs"]
+# O wix/main.wxs é mantido à mão (a pasta langs entra no MSI), então o dist
+# não deve regenerar esse template.
+allow-dirty = ["msi"]
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

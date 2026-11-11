@@ -13,6 +13,8 @@ target
 .*lock
 *.pyw
 *.py
+!translate_ui_langs.py
+.env
 *.bat
 *.log
 __pycache__
