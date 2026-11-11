@@ -1,6 +1,6 @@
 [package]
 name = "desktoporz"
-version = "0.9.5"
+version = "0.10.0"
 edition = "2021"
 description = "DesktopORZ"
 repository = "https://github.com/ThainanViniciusKatchan/DesktopORZ"
