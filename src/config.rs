@@ -23,6 +23,10 @@ pub struct CliConfig {
     /// ignora o campo, mas o preserva ao regravar o arquivo.
     #[serde(default)]
     pub ui_theme: Option<String>,
+    /// Quando true, fechar a janela apenas esconde a interface na bandeja do
+    /// sistema em vez de encerrar o programa.
+    #[serde(default)]
+    pub close_to_tray: Option<bool>,
 }
 
 impl Default for CliConfig {
@@ -33,6 +37,7 @@ impl Default for CliConfig {
             wait_drive: None,
             hide_icons: None,
             ui_theme: None,
+            close_to_tray: None,
         }
     }
 }

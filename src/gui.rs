@@ -35,21 +35,32 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
-use windows::Win32::UI::Shell::{IsUserAnAdmin, ShellExecuteW};
+use windows::Win32::UI::Shell::{
+    IsUserAnAdmin, ShellExecuteW, Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD,
+    NIM_DELETE, NOTIFYICONDATAW, NOTIFY_ICON_DATA_FLAGS,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetClientRect, GetMessageW, LoadCursorW,
     MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassW, ShowWindow, TranslateMessage,
     CS_HREDRAW,
     CS_VREDRAW, CW_USEDEFAULT, IDC_ARROW, IDC_HAND, IDYES, MB_ICONERROR, MB_ICONQUESTION,
-    MB_YESNO, MSG, SW_SHOW, SW_SHOWNORMAL, WM_CHAR, WM_CREATE, WM_DESTROY, WM_ERASEBKGND,
+    MB_YESNO, MSG, SW_HIDE, SW_SHOW, SW_SHOWNORMAL, WM_CHAR, WM_CREATE, WM_DESTROY,
+    WM_ERASEBKGND,
     WM_KEYDOWN, WM_LBUTTONDOWN,
     WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_SIZE, WINDOW_STYLE, WNDCLASSW,
     WS_CLIPCHILDREN, WS_MAXIMIZEBOX, WS_OVERLAPPEDWINDOW, WS_THICKFRAME, WS_VISIBLE,
+    AppendMenuW, CreatePopupMenu, DestroyMenu, DestroyWindow, GetCursorPos, HMENU, IDI_APPLICATION,
+    LoadIconW, MENU_ITEM_FLAGS, MF_CHECKED, MF_SEPARATOR, MF_STRING, SetForegroundWindow,
+    TrackPopupMenu, TRACK_POPUP_MENU_FLAGS, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_CLOSE,
+    WM_CONTEXTMENU, WM_LBUTTONDBLCLK, WM_NULL, WM_RBUTTONUP,
 };
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 /// Mensagem privada: uma worker thread terminou um job (ver `job_results`).
 const WM_APP_JOB_COMPLETED: u32 = 0x8000;
+/// Eventos do mouse no ícone da área de notificação.
+const WM_TRAY_CALLBACK: u32 = 0x8001;
+const TRAY_ICON_ID: u32 = 1;
 
 // ============================================================================
 // PALETA DE CORES IMPECCABLE (DARK & LIGHT)
@@ -179,6 +190,8 @@ enum HitId {
     SaveLangBtn,
     ThemeDark,
     ThemeLight,
+    CloseQuit,
+    CloseToTray,
     CliHelpBtn,
     // Rodapé de status
     RefreshAllBtn,
@@ -245,6 +258,8 @@ struct GuiState {
     wait_drive_profile: String,
 
     selected_lang: String,
+    /// Botão fechar mantém a interface na bandeja em vez de encerrar.
+    close_to_tray: bool,
 
     // Linha de status (rodapé)
     exec_status: String,
@@ -289,6 +304,7 @@ impl GuiState {
             wait_drive_enabled: false,
             wait_drive_profile: String::new(),
             selected_lang: "pt-br".to_string(),
+            close_to_tray: false,
             exec_status: "Pronto.".to_string(),
             exec_status_ok: None,
             pending_jobs: 0,
@@ -364,6 +380,43 @@ impl GuiState {
         dispatch_job(Job::SaveTheme { dark });
     }
 
+    /// Define se o botão fechar mantém o programa na bandeja.
+    fn set_close_to_tray(&mut self, enabled: bool) {
+        self.close_to_tray = enabled;
+        self.pending_jobs += 1;
+        dispatch_job(Job::SaveCloseToTray { enabled });
+    }
+
+    /// Liga/desliga a ocultação usando a configuração já carregada
+    /// (tempo + fontes de atividade: teclado, mouse, barra e cursor).
+    fn toggle_hide_icons(&mut self) {
+        if self.hide_icons_enabled {
+            // Reflete o clique na hora; o comando só confirma depois.
+            self.hide_icons_enabled = false;
+            self.execute_cli_action(&["hide-icons", "off"]);
+        } else if self.apply_hide_icons_on() {
+            self.hide_icons_enabled = true;
+        }
+    }
+
+    fn toggle_startup(&mut self) {
+        if self.startup_enabled {
+            self.startup_enabled = false;
+            self.execute_cli_action(&["startup", "off"]);
+        } else if self.apply_startup_on() {
+            self.startup_enabled = true;
+        }
+    }
+
+    fn toggle_wait_drive(&mut self) {
+        if self.wait_drive_enabled {
+            self.wait_drive_enabled = false;
+            self.execute_cli_action(&["wait-drive", "off"]);
+        } else if self.apply_drive_on() {
+            self.wait_drive_enabled = true;
+        }
+    }
+
     /// Consome um job concluído pelas worker threads (chamado na thread da UI).
     fn apply_job_result(&mut self, result: JobResult) {
         match result {
@@ -421,6 +474,16 @@ impl GuiState {
                     self.dark_mode = !dark;
                     self.set_status(
                         &format!("✖ Não foi possível salvar o tema: {error}"),
+                        Some(false),
+                    );
+                }
+            }
+            JobResult::CloseToTraySaved { enabled, result } => {
+                self.pending_jobs = self.pending_jobs.saturating_sub(1);
+                if let Err(error) = result {
+                    self.close_to_tray = !enabled;
+                    self.set_status(
+                        &format!("✖ Não foi possível salvar a preferência: {error}"),
                         Some(false),
                     );
                 }
@@ -582,6 +645,11 @@ impl GuiState {
                 "light" => self.dark_mode = false,
                 _ => {}
             }
+        }
+
+        // Preferência de manter o programa na bandeja ao fechar a janela.
+        if let Some(close_to_tray) = cfg.close_to_tray {
+            self.close_to_tray = close_to_tray;
         }
     }
 
@@ -826,6 +894,14 @@ fn save_theme_preference(dark: bool) -> Result<(), String> {
     save_cli_config(binary.as_deref(), &cfg)
 }
 
+/// Persiste se o botão fechar deve manter a interface na bandeja.
+fn save_close_to_tray_preference(enabled: bool) -> Result<(), String> {
+    let binary = find_desktoporz_binary();
+    let mut cfg = read_cli_config(binary.as_deref());
+    cfg.close_to_tray = Some(enabled);
+    save_cli_config(binary.as_deref(), &cfg)
+}
+
 fn run_cli_command(bin_path: Option<&Path>, args: &[&str]) -> (bool, String) {
     let Some(bin) = bin_path else {
         return (false, "Executável DesktopORZ.exe não encontrado.".to_string());
@@ -875,6 +951,8 @@ enum Job {
     Restore { name: String, token: usize },
     /// Grava o tema escolhido na interface dentro do `config.json`.
     SaveTheme { dark: bool },
+    /// Grava a preferência de fechar para a bandeja no `config.json`.
+    SaveCloseToTray { enabled: bool },
     /// Recarrega configuração, status dos serviços e resolução da tela.
     Refresh { log_refresh: bool },
 }
@@ -898,6 +976,10 @@ enum JobResult {
         superseded: bool,
     },
     ThemeSaved { dark: bool, result: Result<(), String> },
+    CloseToTraySaved {
+        enabled: bool,
+        result: Result<(), String>,
+    },
     Snapshot(DataSnapshot, bool),
 }
 
@@ -981,6 +1063,13 @@ fn worker_loop(receiver: Arc<Mutex<Receiver<Job>>>) {
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                 let result = save_theme_preference(dark);
                 JobResult::ThemeSaved { dark, result }
+            }
+            Job::SaveCloseToTray { enabled } => {
+                let _guard = COMMAND_LOCK
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let result = save_close_to_tray_preference(enabled);
+                JobResult::CloseToTraySaved { enabled, result }
             }
             Job::Refresh { log_refresh } => JobResult::Snapshot(collect_snapshot(), log_refresh),
         };
@@ -2682,8 +2771,62 @@ fn render_settings_tab(
         id: HitId::ThemeLight,
     });
 
+    // Comportamento do botão fechar
+    let close_y = theme_y + 44;
+    draw_text_in(
+        hdc,
+        "Ao fechar a janela:",
+        make_rect(area.left + 20, close_y, area.left + 220, close_y + 32),
+        f_body,
+        pal.text_primary,
+        DT_LEFT.0 | DT_VCENTER.0 | DT_SINGLELINE.0,
+    );
+
+    let btn_quit = make_rect(area.left + 230, close_y, area.left + 380, close_y + 32);
+    let btn_tray = make_rect(area.left + 388, close_y, area.left + 560, close_y + 32);
+    let (quit_bg, quit_fg) = if st.close_to_tray {
+        (pal.bg_elevated, pal.text_primary)
+    } else {
+        (pal.primary, rgb(255, 255, 255))
+    };
+    let (tray_bg, tray_fg) = if st.close_to_tray {
+        (pal.primary, rgb(255, 255, 255))
+    } else {
+        (pal.bg_elevated, pal.text_primary)
+    };
+    draw_button(
+        hdc,
+        btn_quit,
+        "Encerrar programa",
+        f_sub_bold,
+        quit_bg,
+        quit_bg,
+        quit_fg,
+        st.hovered_id == Some(HitId::CloseQuit),
+        6,
+    );
+    st.hit_zones.push(HitZone {
+        rect: btn_quit,
+        id: HitId::CloseQuit,
+    });
+    draw_button(
+        hdc,
+        btn_tray,
+        "Ficar na bandeja",
+        f_sub_bold,
+        tray_bg,
+        tray_bg,
+        tray_fg,
+        st.hovered_id == Some(HitId::CloseToTray),
+        6,
+    );
+    st.hit_zones.push(HitZone {
+        rect: btn_tray,
+        id: HitId::CloseToTray,
+    });
+
     // Informações do Sistema
-    let info_y = lang_y + 96;
+    let info_y = lang_y + 140;
     draw_text_in(
         hdc,
         "Executável do DesktopORZ:",
@@ -2901,15 +3044,7 @@ fn handle_click(hwnd: HWND, hit: HitId, mouse_x: i32, st: &mut GuiState) {
                 st.apply_hide_icons_on();
             }
         }
-        HitId::ToggleHideIconsBtn => {
-            if st.hide_icons_enabled {
-                // Reflete o clique na hora; o comando só confirma depois.
-                st.hide_icons_enabled = false;
-                st.execute_cli_action(&["hide-icons", "off"]);
-            } else if st.apply_hide_icons_on() {
-                st.hide_icons_enabled = true;
-            }
-        }
+        HitId::ToggleHideIconsBtn => st.toggle_hide_icons(),
         HitId::StartupPrevProfile => {
             st.startup_profile = st.cycle_profile(&st.startup_profile, false);
             if st.startup_enabled {
@@ -2922,14 +3057,7 @@ fn handle_click(hwnd: HWND, hit: HitId, mouse_x: i32, st: &mut GuiState) {
                 st.apply_startup_on();
             }
         }
-        HitId::ToggleStartupBtn => {
-            if st.startup_enabled {
-                st.startup_enabled = false;
-                st.execute_cli_action(&["startup", "off"]);
-            } else if st.apply_startup_on() {
-                st.startup_enabled = true;
-            }
-        }
+        HitId::ToggleStartupBtn => st.toggle_startup(),
         HitId::DrivePrevProfile => {
             st.wait_drive_profile = st.cycle_profile(&st.wait_drive_profile, false);
             if st.wait_drive_enabled {
@@ -2956,14 +3084,7 @@ fn handle_click(hwnd: HWND, hit: HitId, mouse_x: i32, st: &mut GuiState) {
                 st.apply_drive_on();
             }
         }
-        HitId::ToggleDriveBtn => {
-            if st.wait_drive_enabled {
-                st.wait_drive_enabled = false;
-                st.execute_cli_action(&["wait-drive", "off"]);
-            } else if st.apply_drive_on() {
-                st.wait_drive_enabled = true;
-            }
-        }
+        HitId::ToggleDriveBtn => st.toggle_wait_drive(),
         HitId::SelectLang(lang) => {
             st.selected_lang = lang;
         }
@@ -2973,12 +3094,208 @@ fn handle_click(hwnd: HWND, hit: HitId, mouse_x: i32, st: &mut GuiState) {
         }
         HitId::ThemeDark => st.set_theme(true),
         HitId::ThemeLight => st.set_theme(false),
+        HitId::CloseQuit => st.set_close_to_tray(false),
+        HitId::CloseToTray => st.set_close_to_tray(true),
         HitId::CliHelpBtn => {
             st.execute_cli_action(&["help"]);
         }
         HitId::RefreshAllBtn => {
             st.refresh_all_data(true);
         }
+    }
+}
+
+// ============================================================================
+// ÍCONE NA ÁREA DE NOTIFICAÇÃO (SYS TRAY)
+// ============================================================================
+//
+// O menu vive na thread da UI e usa os mesmos despachos de comando dos botões,
+// então tudo o que é ligado por ali aparece refletido na janela.
+
+const TRAY_CMD_RESTORE: usize = 1;
+const TRAY_CMD_HIDE_ICONS: usize = 2;
+const TRAY_CMD_WAIT_DRIVE: usize = 3;
+const TRAY_CMD_STARTUP: usize = 4;
+const TRAY_CMD_EXIT: usize = 5;
+
+struct TrayMenuState {
+    restore: String,
+    hide: String,
+    hide_on: bool,
+    drive: String,
+    drive_on: bool,
+    startup: String,
+    startup_on: bool,
+}
+
+fn tray_menu_state(st: &GuiState) -> TrayMenuState {
+    let mut sources = Vec::new();
+    if st.hide_kb {
+        sources.push("teclado");
+    }
+    if st.hide_mou {
+        sources.push("mouse");
+    }
+    if st.hide_taskbar {
+        sources.push("barra");
+    }
+    if st.hide_cursor {
+        sources.push("cursor");
+    }
+    let sources = if sources.is_empty() {
+        "sem fontes".to_string()
+    } else {
+        sources.join(" + ")
+    };
+    let selected = st
+        .selected_profile
+        .clone()
+        .unwrap_or_else(|| "nenhum".to_string());
+
+    TrayMenuState {
+        restore: format!("Restaurar perfil: {selected}"),
+        hide_on: st.hide_icons_enabled,
+        hide: format!(
+            "{} ocultação ({sources}, {}s)",
+            if st.hide_icons_enabled {
+                "Desativar"
+            } else {
+                "Ativar"
+            },
+            st.hide_seconds
+        ),
+        drive_on: st.wait_drive_enabled,
+        drive: format!(
+            "{} Wait-Drive ({})",
+            if st.wait_drive_enabled {
+                "Desativar"
+            } else {
+                "Ativar"
+            },
+            st.wait_drive_profile
+        ),
+        startup_on: st.startup_enabled,
+        startup: format!(
+            "{} organizar ao iniciar ({})",
+            if st.startup_enabled {
+                "Desativar"
+            } else {
+                "Ativar"
+            },
+            st.startup_profile
+        ),
+    }
+}
+
+fn tray_icon_data(hwnd: HWND) -> NOTIFYICONDATAW {
+    let icon = unsafe { LoadIconW(None, IDI_APPLICATION) }.ok();
+    let mut flags = NIF_MESSAGE.0 | NIF_TIP.0;
+    if icon.is_some() {
+        flags |= NIF_ICON.0;
+    }
+
+    let mut data = NOTIFYICONDATAW {
+        cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: hwnd,
+        uID: TRAY_ICON_ID,
+        uFlags: NOTIFY_ICON_DATA_FLAGS(flags),
+        uCallbackMessage: WM_TRAY_CALLBACK,
+        hIcon: icon.unwrap_or_default(),
+        ..Default::default()
+    };
+    let tip: Vec<u16> = "DesktopORZ".encode_utf16().collect();
+    data.szTip[..tip.len()].copy_from_slice(&tip);
+    data
+}
+
+fn add_tray_icon(hwnd: HWND) {
+    let data = tray_icon_data(hwnd);
+    unsafe {
+        let _ = Shell_NotifyIconW(NIM_ADD, &data);
+    }
+}
+
+fn remove_tray_icon(hwnd: HWND) {
+    let data = tray_icon_data(hwnd);
+    unsafe {
+        let _ = Shell_NotifyIconW(NIM_DELETE, &data);
+    }
+}
+
+fn append_menu_item(menu: HMENU, id: usize, label: &str, checked: bool) {
+    let wide: Vec<u16> = label.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut flags = MF_STRING.0;
+    if checked {
+        flags |= MF_CHECKED.0;
+    }
+    unsafe {
+        let _ = AppendMenuW(menu, MENU_ITEM_FLAGS(flags), id, PCWSTR(wide.as_ptr()));
+    }
+}
+
+fn show_tray_menu(hwnd: HWND) {
+    let labels = match state().lock() {
+        Ok(st) => tray_menu_state(&st),
+        Err(_) => return,
+    };
+
+    unsafe {
+        let Ok(menu) = CreatePopupMenu() else {
+            return;
+        };
+        append_menu_item(menu, TRAY_CMD_RESTORE, &labels.restore, false);
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+        append_menu_item(menu, TRAY_CMD_HIDE_ICONS, &labels.hide, labels.hide_on);
+        append_menu_item(menu, TRAY_CMD_WAIT_DRIVE, &labels.drive, labels.drive_on);
+        append_menu_item(menu, TRAY_CMD_STARTUP, &labels.startup, labels.startup_on);
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+        append_menu_item(menu, TRAY_CMD_EXIT, "Sair do DesktopORZ", false);
+
+        let mut cursor = POINT::default();
+        let _ = GetCursorPos(&mut cursor);
+        let _ = SetForegroundWindow(hwnd);
+
+        let command = TrackPopupMenu(
+            menu,
+            TRACK_POPUP_MENU_FLAGS(TPM_RIGHTBUTTON.0 | TPM_RETURNCMD.0 | TPM_NONOTIFY.0),
+            cursor.x,
+            cursor.y,
+            0,
+            hwnd,
+            None,
+        );
+        let _ = DestroyMenu(menu);
+        // Sem isso o menu fica preso quando a ação rouba o foco.
+        let _ = PostMessageW(hwnd, WM_NULL, WPARAM(0), LPARAM(0));
+
+        let command = command.0 as usize;
+        if command != 0 {
+            run_tray_command(hwnd, command);
+        }
+    }
+}
+
+fn run_tray_command(hwnd: HWND, command: usize) {
+    let mut exit = false;
+    if let Ok(mut st) = state().lock() {
+        match command {
+            TRAY_CMD_RESTORE => st.restore_selected(),
+            TRAY_CMD_HIDE_ICONS => st.toggle_hide_icons(),
+            TRAY_CMD_WAIT_DRIVE => st.toggle_wait_drive(),
+            TRAY_CMD_STARTUP => st.toggle_startup(),
+            // Sem ele não haveria como encerrar com a janela fechando na bandeja.
+            TRAY_CMD_EXIT => exit = true,
+            _ => {}
+        }
+    }
+    if exit {
+        unsafe {
+            let _ = DestroyWindow(hwnd);
+        }
+        return;
+    }
+    unsafe {
+        let _ = InvalidateRect(hwnd, None, false);
     }
 }
 
@@ -2995,6 +3312,18 @@ unsafe extern "system" fn wnd_proc(
         WM_CREATE => {
             // Guarda a janela para que as worker threads possam acordar a UI.
             UI_HWND.store(hwnd.0 as isize, Ordering::Relaxed);
+            add_tray_icon(hwnd);
+            LRESULT(0)
+        }
+        m if m == WM_TRAY_CALLBACK => {
+            match lparam.0 as u32 {
+                WM_LBUTTONUP | WM_LBUTTONDBLCLK => {
+                    let _ = ShowWindow(hwnd, SW_SHOW);
+                    let _ = SetForegroundWindow(hwnd);
+                }
+                WM_RBUTTONUP | WM_CONTEXTMENU => show_tray_menu(hwnd),
+                _ => {}
+            }
             LRESULT(0)
         }
         m if m == WM_APP_JOB_COMPLETED => {
@@ -3198,7 +3527,22 @@ unsafe extern "system" fn wnd_proc(
             let _ = EndPaint(hwnd, &ps);
             LRESULT(0)
         }
+        WM_CLOSE => {
+            // Preferência: fechar apenas esconde a janela e mantém o programa
+            // vivo na bandeja (o "Sair" do menu da bandeja encerra de verdade).
+            let to_tray = state()
+                .lock()
+                .map(|st| st.close_to_tray)
+                .unwrap_or(false);
+            if to_tray {
+                let _ = ShowWindow(hwnd, SW_HIDE);
+                LRESULT(0)
+            } else {
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
+        }
         WM_DESTROY => {
+            remove_tray_icon(hwnd);
             PostQuitMessage(0);
             LRESULT(0)
         }
