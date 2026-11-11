@@ -15,12 +15,13 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 //! Compartilha os módulos do DesktopORZ entre o CLI principal
-//! (`DesktopORZ.exe`) e o monitor de ocultar ícones
-//! (`DesktopORZ-HideIcons.exe`, sem janela de console).
+//! (`DesktopORZ.exe`), a interface gráfica nativa (`DesktopORZ-GUI.exe`)
+//! e o monitor de ocultar ícones (`DesktopORZ-HideIcons.exe`).
 
 pub mod config;
 pub mod cursor;
 pub mod fullscreen;
+pub mod gui;
 pub mod hide_icons;
 pub mod i18n;
 pub mod layout;
@@ -30,5 +31,5 @@ pub mod shell_locator;
 pub mod startup;
 pub mod taskbar_hide;
 pub mod types;
-pub mod window_expand;
 pub mod wait_drive;
+pub mod window_expand;

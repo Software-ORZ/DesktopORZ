@@ -21,7 +21,7 @@ use std::process::ExitCode;
 use desktoporz::i18n::{t, t_args};
 use desktoporz::types::{DesktopProfile, Resolution};
 use desktoporz::{
-    config, hide_icons, i18n, layout, process_watcher, shell_locator, startup, wait_drive,
+    config, gui, hide_icons, i18n, layout, process_watcher, shell_locator, startup, wait_drive,
 };
 
 const PROFILES_DIR: &str = "profiles";
@@ -30,7 +30,9 @@ fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
     match run(&args) {
         Ok(message) => {
-            println!("{message}");
+            if !message.is_empty() {
+                println!("{message}");
+            }
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -42,6 +44,10 @@ fn main() -> ExitCode {
 
 fn run(args: &[String]) -> Result<String, String> {
     match args.first().map(String::as_str) {
+        Some("gui") => {
+            gui::run_gui()?;
+            Ok(String::new())
+        }
         Some("save") => {
             let name = profile_name_arg(args)?;
             let current = shell_locator::current_resolution();
@@ -362,12 +368,33 @@ fn wait_drive_run() -> Result<String, String> {
     ))
 }
 
+fn candidate_profiles_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    let base = profiles_base_dir();
+    dirs.push(base.clone());
+
+    if let Ok(cwd) = env::current_dir() {
+        let cwd_profiles = cwd.join(PROFILES_DIR);
+        if cwd_profiles != base && !dirs.contains(&cwd_profiles) {
+            dirs.push(cwd_profiles);
+        }
+    }
+    dirs
+}
+
 fn profiles_base_dir() -> PathBuf {
     exe_dir().join(PROFILES_DIR)
 }
 
 fn profile_path(name: &str) -> PathBuf {
-    profiles_base_dir().join(format!("{name}.json"))
+    let filename = format!("{name}.json");
+    for dir in candidate_profiles_dirs() {
+        let p = dir.join(&filename);
+        if p.exists() {
+            return p;
+        }
+    }
+    profiles_base_dir().join(filename)
 }
 
 fn parse_resolution(raw: &str) -> Result<Resolution, String> {
@@ -406,15 +433,19 @@ fn load_profile(name: &str) -> Result<DesktopProfile, String> {
 
 fn list_profiles() -> Result<Vec<String>, String> {
     let mut names = Vec::new();
-    let dir = match fs::read_dir(profiles_base_dir()) {
-        Ok(dir) => dir,
-        Err(_) => return Ok(names),
-    };
-    for entry in dir.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("json") {
-            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                names.push(stem.to_string());
+    for dir_path in candidate_profiles_dirs() {
+        let dir = match fs::read_dir(&dir_path) {
+            Ok(dir) => dir,
+            Err(_) => continue,
+        };
+        for entry in dir.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("json") {
+                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    if !names.contains(&stem.to_string()) {
+                        names.push(stem.to_string());
+                    }
+                }
             }
         }
     }

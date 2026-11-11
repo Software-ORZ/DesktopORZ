@@ -6,3 +6,15 @@ Cargo.toml.orig
 >>>>>>> WaitDriveFix
 .freebuff
 .idea
+*.exe
+*.vbs
+.delta
+target
+.*lock
+*.pyw
+*.py
+*.bat
+*.log
+__pycache__
+.codex
+profiles

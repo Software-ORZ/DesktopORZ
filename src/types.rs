@@ -39,3 +39,75 @@ pub struct DesktopProfile {
     #[serde(default)]
     pub resolutions: std::collections::HashMap<String, Vec<IconEntry>>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn test_resolution_equality() {
+        let r1 = Resolution { width: 1920, height: 1080 };
+        let r2 = Resolution { width: 1920, height: 1080 };
+        let r3 = Resolution { width: 2560, height: 1440 };
+        assert_eq!(r1, r2);
+        assert_ne!(r1, r3);
+    }
+
+    #[test]
+    fn test_desktop_profile_serialization() {
+        let mut resolutions = HashMap::new();
+        resolutions.insert(
+            "1920x1080".to_string(),
+            vec![IconEntry {
+                name: "Este Computador".to_string(),
+                x: 100,
+                y: 200,
+            }],
+        );
+
+        let profile = DesktopProfile {
+            profile_name: "padrao".to_string(),
+            resolution: Resolution { width: 1920, height: 1080 },
+            timestamp_utc: 1700000000,
+            icons: vec![
+                IconEntry {
+                    name: "Lixeira".to_string(),
+                    x: 10,
+                    y: 20,
+                },
+                IconEntry {
+                    name: "MultiMonitor".to_string(),
+                    x: -1920,
+                    y: 100,
+                },
+            ],
+            resolutions,
+        };
+
+        let json = serde_json::to_string(&profile).expect("falha ao serializar");
+        let deserialized: DesktopProfile = serde_json::from_str(&json).expect("falha ao desserializar");
+
+        assert_eq!(deserialized.profile_name, "padrao");
+        assert_eq!(deserialized.resolution.width, 1920);
+        assert_eq!(deserialized.resolution.height, 1080);
+        assert_eq!(deserialized.icons.len(), 2);
+        assert_eq!(deserialized.icons[1].x, -1920);
+        assert_eq!(deserialized.resolutions.len(), 1);
+        assert_eq!(deserialized.resolutions.get("1920x1080").unwrap()[0].name, "Este Computador");
+    }
+
+    #[test]
+    fn test_desktop_profile_default_resolutions() {
+        let json = r#"{
+            "profile_name": "simples",
+            "resolution": {"width": 1280, "height": 720},
+            "timestamp_utc": 12345,
+            "icons": []
+        }"#;
+
+        let profile: DesktopProfile = serde_json::from_str(json).expect("falha ao desserializar json sem resolutions");
+        assert_eq!(profile.profile_name, "simples");
+        assert!(profile.resolutions.is_empty());
+    }
+}

@@ -14,6 +14,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
+//! Detecção de janelas maximizadas, tela cheia ou jogos ativos.
+//!
+//! Este módulo é de uso restrito ao recurso `hide_icons` (e seus parâmetros
+//! `-include-taskbar` e `-include-cursor`), impedindo a ocultação de ícones
+//! e perturbação visual durante jogos ou apps em tela cheia.
+//! O ciclo de aplicação de layouts (`layout.rs`) e demais comandos gerais
+//! operam de forma desacoplada deste módulo.
+
 use windows::core::w;
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Gdi::{

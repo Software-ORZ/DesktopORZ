@@ -1,0 +1,20 @@
+{
+  "language": "pt-br",
+  "startup": {
+    "enabled": false,
+    "profile": null,
+    "command": null
+  },
+  "wait_drive": {
+    "enabled": false,
+    "profile": null,
+    "timeout_secs": null
+  },
+  "hide_icons": {
+    "enabled": true,
+    "timeout_secs": 5,
+    "inputs": 3,
+    "include_cursor": true,
+    "include_taskbar": true
+  }
+}

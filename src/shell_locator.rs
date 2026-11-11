@@ -24,17 +24,18 @@ use crate::remote_memory::ProcessHandle;
 
 pub fn find_desktop_listview() -> Result<HWND> {
     unsafe {
-        let progman = FindWindowW(w!("Progman"), PCWSTR::null())?;
-        if let Some(listview) = find_listview_under(progman) {
-            return Ok(listview);
+        if let Ok(progman) = FindWindowW(w!("Progman"), PCWSTR::null()) {
+            if let Some(listview) = find_listview_under(progman) {
+                return Ok(listview);
+            }
         }
 
         let mut worker = HWND::default();
-        loop {
-            worker = FindWindowExW(HWND::default(), worker, w!("WorkerW"), PCWSTR::null())?;
-            if worker.is_invalid() {
+        while let Ok(next) = FindWindowExW(HWND::default(), worker, w!("WorkerW"), PCWSTR::null()) {
+            if next.is_invalid() || next.0.is_null() {
                 break;
             }
+            worker = next;
             if let Some(listview) = find_listview_under(worker) {
                 return Ok(listview);
             }
@@ -53,7 +54,7 @@ fn find_listview_under(parent: HWND) -> Option<HWND> {
             PCWSTR::null(),
         )
         .ok()?;
-        if def_view.is_invalid() {
+        if def_view.is_invalid() || def_view.0.is_null() {
             return None;
         }
         let listview = FindWindowExW(
@@ -63,7 +64,7 @@ fn find_listview_under(parent: HWND) -> Option<HWND> {
             PCWSTR::null(),
         )
         .ok()?;
-        if listview.is_invalid() {
+        if listview.is_invalid() || listview.0.is_null() {
             return None;
         }
         Some(listview)
