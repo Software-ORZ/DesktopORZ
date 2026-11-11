@@ -18,6 +18,7 @@ use std::thread;
 use std::time::UNIX_EPOCH;
 
 use crate::config::CliConfig;
+use crate::layout;
 use crate::shell_locator;
 use crate::types::DesktopProfile;
 
@@ -42,8 +43,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CS_VREDRAW, CW_USEDEFAULT, IDC_ARROW, IDC_HAND, IDYES, MB_ICONERROR, MB_ICONQUESTION,
     MB_YESNO, MSG, SW_SHOW, SW_SHOWNORMAL, WM_CHAR, WM_CREATE, WM_DESTROY, WM_ERASEBKGND,
     WM_KEYDOWN, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_SIZE, WNDCLASSW, WS_CLIPCHILDREN,
-    WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+    WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_SIZE, WINDOW_STYLE, WNDCLASSW,
+    WS_CLIPCHILDREN, WS_MAXIMIZEBOX, WS_OVERLAPPEDWINDOW, WS_THICKFRAME, WS_VISIBLE,
 };
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -340,6 +341,17 @@ impl GuiState {
         dispatch_job(Job::Refresh { log_refresh });
     }
 
+    /// Restaura o perfil selecionado direto no desktop, em segundo plano.
+    fn restore_selected(&mut self) {
+        let Some(name) = self.selected_profile.clone() else {
+            self.notify("⚠ Selecione um perfil antes de restaurar.");
+            return;
+        };
+        self.set_status(&format!("⏳ Restaurando '{name}'..."), None);
+        self.pending_jobs += 1;
+        dispatch_job(Job::Restore { name });
+    }
+
     /// Consome um job concluído pelas worker threads (chamado na thread da UI).
     fn apply_job_result(&mut self, result: JobResult) {
         match result {
@@ -366,6 +378,20 @@ impl GuiState {
                     self.set_status(&text, Some(false));
                 }
                 // Perfis e status podem ter mudado: recarrega em background.
+                self.refresh_all_data(false);
+            }
+            JobResult::RestoreDone { name, moved } => {
+                self.pending_jobs = self.pending_jobs.saturating_sub(1);
+                match moved {
+                    Ok(count) => self.set_status(
+                        &format!("✔ Perfil '{name}' restaurado ({count} ícones movidos)"),
+                        Some(true),
+                    ),
+                    Err(error) => self.set_status(
+                        &format!("✖ Falha ao restaurar '{name}': {error}"),
+                        Some(false),
+                    ),
+                }
                 self.refresh_all_data(false);
             }
             JobResult::Snapshot(snapshot, log_refresh) => self.apply_snapshot(snapshot, log_refresh),
@@ -616,7 +642,9 @@ fn find_desktoporz_binary() -> Option<PathBuf> {
             return Some(c);
         }
     }
-    env::current_exe().ok()
+    // Sem fallback para o próprio executável da interface: chamá-lo com os
+    // argumentos do CLI apenas abriria uma segunda janela em vez de executar.
+    None
 }
 
 fn get_all_profiles_dirs() -> Vec<PathBuf> {
@@ -777,6 +805,9 @@ fn run_cli_command(bin_path: Option<&Path>, args: &[&str]) -> (bool, String) {
 enum Job {
     /// Executa `DesktopORZ.exe <args>` (grava config, mexe no registro etc.).
     Command { args: Vec<String> },
+    /// Restaura um perfil de ícones dentro do próprio processo da interface,
+    /// sem depender do `DesktopORZ.exe` externo nem do seu diretório atual.
+    Restore { name: String },
     /// Recarrega configuração, status dos serviços e resolução da tela.
     Refresh { log_refresh: bool },
 }
@@ -794,6 +825,7 @@ struct DataSnapshot {
 /// Resultado de um job, consumido pela thread da UI.
 enum JobResult {
     CommandDone { ok: bool, output: String },
+    RestoreDone { name: String, moved: Result<usize, String> },
     Snapshot(DataSnapshot, bool),
 }
 
@@ -859,6 +891,10 @@ fn worker_loop(receiver: Arc<Mutex<Receiver<Job>>>) {
                 let (ok, output) = run_cli_command(binary.as_deref(), &arg_refs);
                 JobResult::CommandDone { ok, output }
             }
+            Job::Restore { name } => {
+                let moved = restore_profile_now(&name);
+                JobResult::RestoreDone { name, moved }
+            }
             Job::Refresh { log_refresh } => JobResult::Snapshot(collect_snapshot(), log_refresh),
         };
 
@@ -886,6 +922,27 @@ fn collect_snapshot() -> DataSnapshot {
         drive_status,
         resolution: shell_locator::current_resolution(),
     }
+}
+
+/// Lê o JSON do perfil nas mesmas pastas que a interface lista.
+fn load_profile_from_disk(name: &str) -> Result<DesktopProfile, String> {
+    let filename = format!("{name}.json");
+    for dir in get_all_profiles_dirs() {
+        let path = dir.join(&filename);
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        return serde_json::from_str::<DesktopProfile>(&text)
+            .map_err(|e| format!("perfil inválido ({e})"));
+    }
+    Err(format!("perfil '{name}' não encontrado"))
+}
+
+/// Aplica o layout direto no desktop, na worker thread e sem subprocesso.
+fn restore_profile_now(name: &str) -> Result<usize, String> {
+    let profile = load_profile_from_disk(name)?;
+    let _ = shell_locator::refresh_desktop();
+    layout::restore_layout(&profile).map_err(|e| format!("{e}"))
 }
 
 fn wake_ui_thread() {
@@ -2614,9 +2671,7 @@ fn handle_click(hwnd: HWND, hit: HitId, mouse_x: i32, st: &mut GuiState) {
             st.icons_scroll = 0;
         }
         HitId::RestoreSelected => {
-            if let Some(name) = st.selected_profile.clone() {
-                st.execute_cli_action(&["restore", &name]);
-            }
+            st.restore_selected();
         }
         HitId::UpdateSelected => {
             if let Some(name) = st.selected_profile.clone() {
@@ -3007,11 +3062,15 @@ unsafe extern "system" fn wnd_proc(
 
 /// Garante privilégios de administrador: os comandos do CLI gravam no
 /// registro e na pasta de inicialização do Windows. Se o processo atual não
-/// estiver elevado, relança a si mesmo via UAC e encerra o original.
-fn ensure_elevated() -> Result<(), String> {
+/// estiver elevado, relança a si mesmo via UAC.
+///
+/// `Ok(true)` = já elevado, esta instância deve rodar a interface.
+/// `Ok(false)` = uma instância elevada foi lançada; esta deve encerrar sem
+/// criar janela (caso contrário aparecem duas interfaces).
+fn ensure_elevated() -> Result<bool, String> {
     unsafe {
         if IsUserAnAdmin().as_bool() {
-            return Ok(());
+            return Ok(true);
         }
 
         let exe = env::current_exe().map_err(|e| format!("{e}"))?;
@@ -3049,8 +3108,8 @@ fn ensure_elevated() -> Result<(), String> {
             );
         }
     }
-    // A instância elevada assume daqui; esta fecha em seguida.
-    Ok(())
+    // A instância elevada assume daqui; esta encerra em seguida.
+    Ok(false)
 }
 
 fn show_error(title: &str, message: &str) {
@@ -3068,9 +3127,15 @@ fn show_error(title: &str, message: &str) {
 
 /// Ponto de entrada público para iniciar a interface gráfica nativa em Rust.
 pub fn run_gui() -> Result<(), String> {
-    if let Err(error) = ensure_elevated() {
-        show_error("DesktopORZ", &error);
-        return Err(error);
+    match ensure_elevated() {
+        // Já elevado: segue normalmente.
+        Ok(true) => {}
+        // Instância elevada já lançada: encerra sem abrir outra janela.
+        Ok(false) => return Ok(()),
+        Err(error) => {
+            show_error("DesktopORZ", &error);
+            return Err(error);
+        }
     }
 
     unsafe {
@@ -3088,11 +3153,19 @@ pub fn run_gui() -> Result<(), String> {
 
         RegisterClassW(&wc);
 
+        // Tamanho fixo: barra de título com fechar/minimizar, sem borda de
+        // redimensionamento e sem botão maximizar.
+        let window_style = WINDOW_STYLE(
+            (WS_OVERLAPPEDWINDOW.0 & !WS_THICKFRAME.0 & !WS_MAXIMIZEBOX.0)
+                | WS_VISIBLE.0
+                | WS_CLIPCHILDREN.0,
+        );
+
         let hwnd = CreateWindowExW(
             Default::default(),
             class_name,
             w!("DesktopORZ — Gerenciador de Ícones da Área de Trabalho (Rust GUI)"),
-            WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN,
+            window_style,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
             1080,
