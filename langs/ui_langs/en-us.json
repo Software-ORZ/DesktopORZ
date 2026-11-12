@@ -41,7 +41,9 @@
     "preference_save_error": "✖ Could not save the preference: {error}",
     "language_saved": "✔ Interface language changed to '{language}'.",
     "language_save_error": "✖ Could not save the language: {error}",
-    "refresh": "🔄 Refresh All"
+    "refresh": "🔄 Refresh All",
+    "ui_startup_on": "✔ The interface now starts with Windows.",
+    "ui_startup_off": "✔ The interface no longer starts with Windows."
   },
   "profiles": {
     "save_title": "💾 Save Current Layout:",
@@ -113,7 +115,10 @@
     "resolution_value": "{width}x{height} pixels",
     "resolution_loading": "detecting...",
     "profiles_dirs_label": "Profile Folders:",
-    "cli_help": "📖 Show Full CLI Help (help)"
+    "cli_help": "📖 Show Full CLI Help (help)",
+    "ui_startup_label": "Start with Windows:",
+    "ui_startup_on": "Enabled",
+    "ui_startup_off": "Disabled"
   },
   "tray": {
     "restore": "Restore profile: {profile}",

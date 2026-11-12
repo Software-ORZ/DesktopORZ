@@ -88,6 +88,17 @@ fn embed_version_info() {
 
     // Erros do compilador de recursos (rc.exe/windres ausente) não devem
     // derrubar o build inteiro: emite aviso e segue sem os metadados.
+    // Ícone do executável (usado também pela bandeja do sistema): o
+    // `rc.exe` só aceita `.ico`, por isso `icon/DesktopORZ.ico` é gerado a
+    // partir dos PNGs de `icon/windows/`.
+    let icon = PathBuf::from("icon").join("DesktopORZ.ico");
+    if icon.is_file() {
+        println!("cargo:rerun-if-changed={}", icon.display());
+        res.set_icon(&icon.to_string_lossy());
+    } else {
+        println!("cargo:warning=ícone não encontrado: {}", icon.display());
+    }
+
     if let Err(e) = res.compile() {
         println!("cargo:warning=falha ao embutir VERSIONINFO (metadados ignorados): {e}");
     }

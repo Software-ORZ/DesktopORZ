@@ -10,6 +10,7 @@ include = [
     "src/**/*",
     "build.rs",
     "langs/**/*",
+    "icon/DesktopORZ.ico",
     "Cargo.toml",
     "README.md",
 ]

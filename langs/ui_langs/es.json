@@ -41,7 +41,9 @@
     "preference_save_error": "✖ No se pudo guardar la preferencia: {error}",
     "language_saved": "✔ Idioma de la interfaz cambiado a '{language}'.",
     "language_save_error": "✖ No se pudo guardar el idioma: {error}",
-    "refresh": "🔄 Actualizar Todo"
+    "refresh": "🔄 Actualizar Todo",
+    "ui_startup_on": "✔ La interfaz ahora se inicia con Windows.",
+    "ui_startup_off": "✔ La interfaz ya no se inicia con Windows."
   },
   "profiles": {
     "save_title": "💾 Guardar Diseño Actual:",
@@ -113,7 +115,10 @@
     "resolution_value": "{width}x{height} píxeles",
     "resolution_loading": "detectando...",
     "profiles_dirs_label": "Carpetas de Perfiles:",
-    "cli_help": "📖 Mostrar Ayuda Completa del CLI (help)"
+    "cli_help": "📖 Mostrar Ayuda Completa del CLI (help)",
+    "ui_startup_label": "Iniciar con Windows:",
+    "ui_startup_on": "Activado",
+    "ui_startup_off": "Desactivado"
   },
   "tray": {
     "restore": "Restaurar perfil: {profile}",

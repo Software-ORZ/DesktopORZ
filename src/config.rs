@@ -31,6 +31,10 @@ pub struct CliConfig {
     /// sistema em vez de encerrar o programa.
     #[serde(default)]
     pub close_to_tray: Option<bool>,
+    /// Espelho da entrada que abre a interface junto com o Windows
+    /// (fonte da verdade: `HKCU\...\Run`, ver `ui_startup`).
+    #[serde(default)]
+    pub ui_startup: Option<bool>,
 }
 
 impl Default for CliConfig {
@@ -43,6 +47,7 @@ impl Default for CliConfig {
             hide_icons: None,
             ui_theme: None,
             close_to_tray: None,
+            ui_startup: None,
         }
     }
 }
@@ -154,6 +159,13 @@ pub fn get_wait_drive() -> Option<WaitDriveMirror> {
 pub fn set_wait_drive(mirror: Option<WaitDriveMirror>) {
     let mut config = load_or_create_config();
     config.wait_drive = mirror;
+    let _ = save_config(&config);
+}
+
+/// Grava o espelho da inicialização da interface no `config.json`.
+pub fn set_ui_startup(enabled: bool) {
+    let mut config = load_or_create_config();
+    config.ui_startup = Some(enabled);
     let _ = save_config(&config);
 }
 

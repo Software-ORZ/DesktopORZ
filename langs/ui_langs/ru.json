@@ -41,7 +41,9 @@
     "preference_save_error": "✖ Не удалось сохранить настройку: {error}",
     "language_saved": "✔ Язык интерфейса изменён на '{language}'.",
     "language_save_error": "✖ Не удалось сохранить язык: {error}",
-    "refresh": "🔄 Обновить всё"
+    "refresh": "🔄 Обновить всё",
+    "ui_startup_on": "✔ Интерфейс теперь запускается вместе с Windows.",
+    "ui_startup_off": "✔ Интерфейс больше не запускается вместе с Windows."
   },
   "profiles": {
     "save_title": "💾 Сохранить текущий макет:",
@@ -113,7 +115,10 @@
     "resolution_value": "{width}x{height} пикселей",
     "resolution_loading": "определение...",
     "profiles_dirs_label": "Папки профилей:",
-    "cli_help": "📖 Полная справка CLI (help)"
+    "cli_help": "📖 Полная справка CLI (help)",
+    "ui_startup_label": "Запуск с Windows:",
+    "ui_startup_on": "Включено",
+    "ui_startup_off": "Отключено"
   },
   "tray": {
     "restore": "Восстановить профиль: {profile}",

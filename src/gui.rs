@@ -24,7 +24,9 @@ use crate::shell_locator;
 use crate::types::DesktopProfile;
 
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
+use windows::Win32::Foundation::{
+    COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
+};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW, CreatePen,
     CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect,
@@ -53,7 +55,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, DestroyMenu, DestroyWindow, GetCursorPos, HMENU, IDI_APPLICATION,
     LoadIconW, MENU_ITEM_FLAGS, MF_CHECKED, MF_SEPARATOR, MF_STRING, SetForegroundWindow,
     TrackPopupMenu, TRACK_POPUP_MENU_FLAGS, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_CLOSE,
-    WM_CONTEXTMENU, WM_LBUTTONDBLCLK, WM_NULL, WM_RBUTTONUP,
+    HICON, WM_CONTEXTMENU, WM_LBUTTONDBLCLK, WM_NULL, WM_RBUTTONUP,
 };
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -62,6 +64,8 @@ const WM_APP_JOB_COMPLETED: u32 = 0x8000;
 /// Eventos do mouse no ícone da área de notificação.
 const WM_TRAY_CALLBACK: u32 = 0x8001;
 const TRAY_ICON_ID: u32 = 1;
+/// ID do recurso de ícone embutido no .exe pelo `build.rs` (`set_icon` usa 1).
+const APP_ICON_RESOURCE_ID: usize = 1;
 
 // ============================================================================
 // PALETA DE CORES IMPECCABLE (DARK & LIGHT)
@@ -193,6 +197,8 @@ enum HitId {
     ThemeLight,
     CloseQuit,
     CloseToTray,
+    UiStartupOn,
+    UiStartupOff,
     CliHelpBtn,
     // Rodapé de status
     RefreshAllBtn,
@@ -261,6 +267,8 @@ struct GuiState {
     selected_lang: String,
     /// Botão fechar mantém a interface na bandeja em vez de encerrar.
     close_to_tray: bool,
+    /// Inicialização da própria interface junto com o Windows.
+    ui_startup_enabled: bool,
 
     // Linha de status (rodapé)
     exec_status: String,
@@ -306,6 +314,7 @@ impl GuiState {
             wait_drive_profile: String::new(),
             selected_lang: crate::config::get_ui_language(),
             close_to_tray: false,
+            ui_startup_enabled: crate::ui_startup::is_enabled(),
             exec_status: ui_t("status.ready"),
             exec_status_ok: None,
             pending_jobs: 0,
@@ -388,6 +397,17 @@ impl GuiState {
         self.close_to_tray = enabled;
         self.pending_jobs += 1;
         dispatch_job(Job::SaveCloseToTray { enabled });
+    }
+
+    /// Liga/desliga a inicialização da interface junto com o Windows.
+    fn set_ui_startup(&mut self, enabled: bool) {
+        if self.ui_startup_enabled == enabled {
+            return;
+        }
+        // Reflete o clique na hora; o job confirma (ou desfaz) no registro.
+        self.ui_startup_enabled = enabled;
+        self.pending_jobs += 1;
+        dispatch_job(Job::SetUiStartup { enabled });
     }
 
     /// Aplica o idioma escolhido na aba Idioma & Sistema (interface e CLI).
@@ -495,6 +515,26 @@ impl GuiState {
                     self.close_to_tray = !enabled;
                     let text = ui_t_args("status.preference_save_error", &[("error", &error)]);
                     self.set_status(&text, Some(false));
+                }
+            }
+            JobResult::UiStartupSaved { enabled, result } => {
+                self.pending_jobs = self.pending_jobs.saturating_sub(1);
+                match result {
+                    Ok(()) => {
+                        self.ui_startup_enabled = enabled;
+                        let text = if enabled {
+                            ui_t("status.ui_startup_on")
+                        } else {
+                            ui_t("status.ui_startup_off")
+                        };
+                        self.set_status(&text, Some(true));
+                    }
+                    Err(error) => {
+                        // Não deu para escrever no registro: desfaz o clique.
+                        self.ui_startup_enabled = !enabled;
+                        let text = ui_t_args("status.preference_save_error", &[("error", &error)]);
+                        self.set_status(&text, Some(false));
+                    }
                 }
             }
             JobResult::UiLanguageSaved { lang, result } => {
@@ -995,6 +1035,8 @@ enum Job {
     SaveTheme { dark: bool },
     /// Grava a preferência de fechar para a bandeja no `config.json`.
     SaveCloseToTray { enabled: bool },
+    /// Cria/remove a entrada da interface em `HKCU\...\Run`.
+    SetUiStartup { enabled: bool },
     /// Grava o idioma da interface no `config.json` e recarrega os textos.
     SaveUiLanguage { lang: String },
     /// Recarrega configuração, status dos serviços e resolução da tela.
@@ -1021,6 +1063,10 @@ enum JobResult {
     },
     ThemeSaved { dark: bool, result: Result<(), String> },
     CloseToTraySaved {
+        enabled: bool,
+        result: Result<(), String>,
+    },
+    UiStartupSaved {
         enabled: bool,
         result: Result<(), String>,
     },
@@ -1118,6 +1164,15 @@ fn worker_loop(receiver: Arc<Mutex<Receiver<Job>>>) {
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                 let result = save_close_to_tray_preference(enabled);
                 JobResult::CloseToTraySaved { enabled, result }
+            }
+            Job::SetUiStartup { enabled } => {
+                let _guard = COMMAND_LOCK
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                JobResult::UiStartupSaved {
+                    enabled,
+                    result: crate::ui_startup::set_enabled(enabled),
+                }
             }
             Job::SaveUiLanguage { lang } => {
                 let _guard = COMMAND_LOCK
@@ -2947,8 +3002,61 @@ fn render_settings_tab(
         id: HitId::CloseToTray,
     });
 
+    // Iniciar a interface junto com o Windows
+    let ui_start_y = close_y + 44;
+    draw_text_in(
+        hdc,
+        &ui_t("settings.ui_startup_label"),
+        make_rect(area.left + 20, ui_start_y, area.left + 220, ui_start_y + 32),
+        f_body,
+        pal.text_primary,
+        DT_LEFT.0 | DT_VCENTER.0 | DT_SINGLELINE.0,
+    );
+    let btn_ui_on = make_rect(area.left + 230, ui_start_y, area.left + 330, ui_start_y + 32);
+    let btn_ui_off = make_rect(area.left + 338, ui_start_y, area.left + 438, ui_start_y + 32);
+    let (ui_on_bg, ui_on_fg) = if st.ui_startup_enabled {
+        (pal.success, rgb(255, 255, 255))
+    } else {
+        (pal.bg_elevated, pal.text_primary)
+    };
+    let (ui_off_bg, ui_off_fg) = if st.ui_startup_enabled {
+        (pal.bg_elevated, pal.text_primary)
+    } else {
+        (pal.danger, rgb(255, 255, 255))
+    };
+    draw_button(
+        hdc,
+        btn_ui_on,
+        &ui_t("settings.ui_startup_on"),
+        f_sub_bold,
+        ui_on_bg,
+        ui_on_bg,
+        ui_on_fg,
+        st.hovered_id == Some(HitId::UiStartupOn),
+        6,
+    );
+    st.hit_zones.push(HitZone {
+        rect: btn_ui_on,
+        id: HitId::UiStartupOn,
+    });
+    draw_button(
+        hdc,
+        btn_ui_off,
+        &ui_t("settings.ui_startup_off"),
+        f_sub_bold,
+        ui_off_bg,
+        ui_off_bg,
+        ui_off_fg,
+        st.hovered_id == Some(HitId::UiStartupOff),
+        6,
+    );
+    st.hit_zones.push(HitZone {
+        rect: btn_ui_off,
+        id: HitId::UiStartupOff,
+    });
+
     // Informações do Sistema
-    let info_y = lang_y + 140;
+    let info_y = lang_y + 184;
     draw_text_in(
         hdc,
         &ui_t("settings.binary_label"),
@@ -3219,6 +3327,8 @@ fn handle_click(hwnd: HWND, hit: HitId, mouse_x: i32, st: &mut GuiState) {
         HitId::ThemeLight => st.set_theme(false),
         HitId::CloseQuit => st.set_close_to_tray(false),
         HitId::CloseToTray => st.set_close_to_tray(true),
+        HitId::UiStartupOn => st.set_ui_startup(true),
+        HitId::UiStartupOff => st.set_ui_startup(false),
         HitId::CliHelpBtn => {
             st.execute_cli_action(&["help"]);
         }
@@ -3306,8 +3416,16 @@ fn tray_menu_state(st: &GuiState) -> TrayMenuState {
     }
 }
 
+/// Ícone embutido no `.exe` (recurso ICON 1, gerado em `build.rs` a partir
+/// de `icon/windows/`). `None` quando o recurso não foi embutido.
+fn app_icon() -> Option<HICON> {
+    let module = unsafe { GetModuleHandleW(None) }.ok()?;
+    let instance = HINSTANCE::from(module);
+    unsafe { LoadIconW(Some(&instance), PCWSTR::from_raw(APP_ICON_RESOURCE_ID as *const u16)) }.ok()
+}
+
 fn tray_icon_data(hwnd: HWND) -> NOTIFYICONDATAW {
-    let icon = unsafe { LoadIconW(None, IDI_APPLICATION) }.ok();
+    let icon = app_icon().or_else(|| unsafe { LoadIconW(None, IDI_APPLICATION) }.ok());
     let mut flags = NIF_MESSAGE.0 | NIF_TIP.0;
     if icon.is_some() {
         flags |= NIF_ICON.0;
@@ -3752,6 +3870,7 @@ pub fn run_gui() -> Result<(), String> {
             lpfnWndProc: Some(wnd_proc),
             hInstance: hinstance.into(),
             hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
+            hIcon: app_icon().unwrap_or_default(),
             lpszClassName: class_name,
             ..Default::default()
         };
