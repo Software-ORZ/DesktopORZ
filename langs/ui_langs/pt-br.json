@@ -22,7 +22,7 @@
   },
   "tabs": {
     "profiles": "📁 Perfis & Área de Trabalho",
-    "automations": "⚙️ Automações (Ocultar, Startup, Nuvem)",
+    "automations": "⚙️ Automações (Ocultar, Nuvem)",
     "settings": "🌐 Idioma & Sistema"
   },
   "status": {
@@ -109,16 +109,13 @@
     "close_label": "Ao fechar a janela:",
     "close_quit": "Encerrar programa",
     "close_tray": "Ficar na bandeja",
-    "binary_label": "Executável do DesktopORZ:",
-    "binary_missing": "Não encontrado",
     "resolution_label": "Resolução Atual da Tela:",
     "resolution_value": "{width}x{height} pixels",
     "resolution_loading": "detectando...",
-    "profiles_dirs_label": "Pastas de Perfis:",
-    "cli_help": "📖 Exibir Ajuda Completa do CLI (help)",
     "ui_startup_label": "Iniciar com o Windows:",
     "ui_startup_on": "Ativado",
-    "ui_startup_off": "Desativado"
+    "ui_startup_off": "Desativado",
+    "organize_startup_label": "Organizar ao iniciar com sistema"
   },
   "tray": {
     "restore": "Restaurar perfil: {profile}",

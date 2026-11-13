@@ -22,7 +22,7 @@
   },
   "tabs": {
     "profiles": "📁 Profiles & Desktop",
-    "automations": "⚙️ Automations (Hide, Startup, Cloud)",
+    "automations": "⚙️ Automations (Hide, Cloud)",
     "settings": "🌐 Language & System"
   },
   "status": {
@@ -109,16 +109,13 @@
     "close_label": "When closing the window:",
     "close_quit": "Exit program",
     "close_tray": "Stay in tray",
-    "binary_label": "DesktopORZ executable:",
-    "binary_missing": "Not found",
     "resolution_label": "Current Screen Resolution:",
     "resolution_value": "{width}x{height} pixels",
     "resolution_loading": "detecting...",
-    "profiles_dirs_label": "Profile Folders:",
-    "cli_help": "📖 Show Full CLI Help (help)",
     "ui_startup_label": "Start with Windows:",
     "ui_startup_on": "Enabled",
-    "ui_startup_off": "Disabled"
+    "ui_startup_off": "Disabled",
+    "organize_startup_label": "Arrange icons at system startup"
   },
   "tray": {
     "restore": "Restore profile: {profile}",

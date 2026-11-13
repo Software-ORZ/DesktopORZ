@@ -199,7 +199,6 @@ enum HitId {
     CloseToTray,
     UiStartupOn,
     UiStartupOff,
-    CliHelpBtn,
     // Rodapé de status
     RefreshAllBtn,
 }
@@ -406,6 +405,12 @@ impl GuiState {
         }
         // Reflete o clique na hora; o job confirma (ou desfaz) no registro.
         self.ui_startup_enabled = enabled;
+        // A organização ao iniciar é uma opção dentro da inicialização da
+        // interface: sem ela, a organização automática também é desligada.
+        if !enabled && self.startup_enabled {
+            self.startup_enabled = false;
+            self.execute_cli_action(&["startup", "off"]);
+        }
         self.pending_jobs += 1;
         dispatch_job(Job::SetUiStartup { enabled });
     }
@@ -1537,6 +1542,9 @@ fn render_gui(hdc: HDC, width: i32, height: i32, st: &mut GuiState) {
     let wait_profile = profile_label(&st.wait_drive_profile);
     let startup_profile = profile_label(&st.startup_profile);
     let hide_seconds = st.hide_seconds.to_string();
+    // O badge acompanha a inicialização da interface: fica ativo assim que
+    // ela é ligada, mesmo sem a organização automática habilitada.
+    let startup_active = st.ui_startup_enabled || st.startup_enabled;
     let badges = [
         (
             if st.wait_drive_enabled {
@@ -1565,7 +1573,7 @@ fn render_gui(hdc: HDC, width: i32, height: i32, st: &mut GuiState) {
             145,
         ),
         (
-            if st.startup_enabled {
+            if startup_active {
                 ui_t_args(
                     "header.badge_startup_active",
                     &[("profile", &startup_profile)],
@@ -1573,7 +1581,7 @@ fn render_gui(hdc: HDC, width: i32, height: i32, st: &mut GuiState) {
             } else {
                 ui_t("header.badge_startup_inactive")
             },
-            if st.startup_enabled {
+            if startup_active {
                 pal.success
             } else {
                 pal.text_muted
@@ -2205,14 +2213,11 @@ fn render_automations_tab(
 ) {
     let total_w = area.right - area.left;
     let half_w = (total_w - 12) / 2;
-    let top_row_h = ((area.bottom - area.top) * 62) / 100;
 
-    let card_hide = make_rect(area.left, area.top, area.left + half_w, area.top + top_row_h);
-    let card_startup = make_rect(card_hide.right + 12, area.top, area.right, area.top + top_row_h);
-    let card_drive = make_rect(area.left, card_hide.bottom + 12, area.right, area.bottom);
+    let card_hide = make_rect(area.left, area.top, area.left + half_w, area.bottom);
+    let card_drive = make_rect(card_hide.right + 12, area.top, area.right, area.bottom);
 
     draw_round_box(hdc, card_hide, pal.bg_card, pal.border, 8);
-    draw_round_box(hdc, card_startup, pal.bg_card, pal.border, 8);
     draw_round_box(hdc, card_drive, pal.bg_card, pal.border, 8);
 
     // ------------------------------------------------------------------------
@@ -2450,156 +2455,15 @@ fn render_automations_tab(
     });
 
     // ------------------------------------------------------------------------
-    // CARD 2: INICIALIZAÇÃO COM O WINDOWS (STARTUP)
-    // ------------------------------------------------------------------------
-    draw_text_in(
-        hdc,
-        &ui_t("automations.startup_title"),
-        make_rect(card_startup.left + 16, card_startup.top + 12, card_startup.right - 140, card_startup.top + 36),
-        f_sec,
-        pal.text_primary,
-        DT_LEFT.0 | DT_VCENTER.0 | DT_SINGLELINE.0,
-    );
-    let startup_profile_name = profile_label(&st.startup_profile);
-    let (st_lbl_txt, st_lbl_col) = if st.startup_enabled {
-        (
-            ui_t_args("automations.active", &[("detail", &startup_profile_name)]),
-            pal.success,
-        )
-    } else {
-        (ui_t("automations.inactive"), pal.text_muted)
-    };
-    draw_text_in(
-        hdc,
-        &st_lbl_txt,
-        make_rect(card_startup.right - 140, card_startup.top + 12, card_startup.right - 16, card_startup.top + 36),
-        f_small_bold,
-        st_lbl_col,
-        DT_RIGHT.0 | DT_VCENTER.0 | DT_SINGLELINE.0,
-    );
-
-    draw_text_in(
-        hdc,
-        &ui_t("automations.startup_desc"),
-        make_rect(card_startup.left + 16, card_startup.top + 38, card_startup.right - 16, card_startup.top + 78),
-        f_small,
-        pal.text_muted,
-        DT_LEFT.0 | DT_WORDBREAK.0,
-    );
-
-    let sel_y = card_startup.top + 96;
-    draw_text_in(
-        hdc,
-        &ui_t("automations.startup_profile_label"),
-        make_rect(card_startup.left + 16, sel_y, card_startup.left + 190, sel_y + 32),
-        f_body,
-        pal.text_primary,
-        DT_LEFT.0 | DT_VCENTER.0 | DT_SINGLELINE.0,
-    );
-
-    // Seletor de perfil com botões ◀ e ▶
-    let prev_st_r = make_rect(card_startup.left + 195, sel_y, card_startup.left + 227, sel_y + 32);
-    let next_st_r = make_rect(card_startup.right - 48, sel_y, card_startup.right - 16, sel_y + 32);
-    let mid_st_r = make_rect(prev_st_r.right + 6, sel_y, next_st_r.left - 6, sel_y + 32);
-
-    draw_button(
-        hdc,
-        prev_st_r,
-        "◀",
-        f_small_bold,
-        pal.bg_elevated,
-        pal.border,
-        pal.text_primary,
-        st.hovered_id == Some(HitId::StartupPrevProfile),
-        6,
-    );
-    st.hit_zones.push(HitZone {
-        rect: prev_st_r,
-        id: HitId::StartupPrevProfile,
-    });
-
-    draw_round_box(hdc, mid_st_r, pal.bg_input, pal.border, 6);
-    draw_text_in(
-        hdc,
-        &format!("📁 {}", profile_label(&st.startup_profile)),
-        mid_st_r,
-        f_sub_bold,
-        pal.text_primary,
-        DT_CENTER.0 | DT_VCENTER.0 | DT_SINGLELINE.0 | DT_END_ELLIPSIS.0,
-    );
-    st.hit_zones.push(HitZone {
-        rect: mid_st_r,
-        id: HitId::StartupNextProfile,
-    });
-
-    draw_button(
-        hdc,
-        next_st_r,
-        "▶",
-        f_small_bold,
-        pal.bg_elevated,
-        pal.border,
-        pal.text_primary,
-        st.hovered_id == Some(HitId::StartupNextProfile),
-        6,
-    );
-    st.hit_zones.push(HitZone {
-        rect: next_st_r,
-        id: HitId::StartupNextProfile,
-    });
-
-    // Botão Único e Dinâmico: Startup
-    let btn_st_r = make_rect(
-        card_startup.left + 16,
-        card_startup.bottom - 48,
-        card_startup.right - 16,
-        card_startup.bottom - 12,
-    );
-    let (st_btn_txt, st_bg, st_hov) = if st.startup_enabled {
-        (
-            ui_t_args(
-                "automations.startup_on",
-                &[("profile", &startup_profile_name)],
-            ),
-            pal.danger,
-            pal.danger_hover,
-        )
-    } else {
-        (
-            ui_t_args(
-                "automations.startup_off",
-                &[("profile", &startup_profile_name)],
-            ),
-            pal.success,
-            pal.success_hover,
-        )
-    };
-    draw_button(
-        hdc,
-        btn_st_r,
-        &st_btn_txt,
-        f_sub_bold,
-        st_bg,
-        st_hov,
-        rgb(255, 255, 255),
-        st.hovered_id == Some(HitId::ToggleStartupBtn),
-        8,
-    );
-    st.hit_zones.push(HitZone {
-        rect: btn_st_r,
-        id: HitId::ToggleStartupBtn,
-    });
-
-    // ------------------------------------------------------------------------
     // CARD 3: SINCRONIZAÇÃO EM NUVEM (GOOGLE DRIVE / WAIT-DRIVE)
     // ------------------------------------------------------------------------
     draw_text_in(
         hdc,
         &ui_t("automations.drive_title"),
-        make_rect(card_drive.left + 16, card_drive.top + 10, card_drive.right - 160, card_drive.top + 34),
+        make_rect(card_drive.left + 16, card_drive.top + 10, card_drive.right - 120, card_drive.top + 34),
         f_sec,
         pal.text_primary,
-        DT_LEFT.0 | DT_VCENTER.0 | DT_SINGLELINE.0,
+        DT_LEFT.0 | DT_VCENTER.0 | DT_SINGLELINE.0 | DT_END_ELLIPSIS.0,
     );
     let drive_profile_name = profile_label(&st.wait_drive_profile);
     let (dr_lbl_txt, dr_lbl_col) = if st.wait_drive_enabled {
@@ -2613,7 +2477,7 @@ fn render_automations_tab(
     draw_text_in(
         hdc,
         &dr_lbl_txt,
-        make_rect(card_drive.right - 160, card_drive.top + 10, card_drive.right - 16, card_drive.top + 34),
+        make_rect(card_drive.right - 118, card_drive.top + 10, card_drive.right - 16, card_drive.top + 34),
         f_small_bold,
         dr_lbl_col,
         DT_RIGHT.0 | DT_VCENTER.0 | DT_SINGLELINE.0,
@@ -2622,25 +2486,25 @@ fn render_automations_tab(
     draw_text_in(
         hdc,
         &ui_t("automations.drive_desc"),
-        make_rect(card_drive.left + 16, card_drive.top + 34, card_drive.right - 16, card_drive.top + 56),
+        make_rect(card_drive.left + 16, card_drive.top + 34, card_drive.right - 16, card_drive.top + 96),
         f_small,
         pal.text_muted,
-        DT_LEFT.0 | DT_VCENTER.0 | DT_SINGLELINE.0 | DT_END_ELLIPSIS.0,
+        DT_LEFT.0 | DT_WORDBREAK.0,
     );
 
-    let dc_y = card_drive.bottom - 46;
+    let dc_y = card_drive.top + 108;
     draw_text_in(
         hdc,
         &ui_t("automations.drive_profile_label"),
-        make_rect(card_drive.left + 16, dc_y, card_drive.left + 64, dc_y + 34),
+        make_rect(card_drive.left + 16, dc_y, card_drive.left + 64, dc_y + 32),
         f_body,
         pal.text_primary,
         DT_LEFT.0 | DT_VCENTER.0 | DT_SINGLELINE.0,
     );
 
-    let dp_prev = make_rect(card_drive.left + 68, dc_y + 2, card_drive.left + 96, dc_y + 32);
-    let dp_mid = make_rect(dp_prev.right + 4, dc_y + 2, dp_prev.right + 144, dc_y + 32);
-    let dp_next = make_rect(dp_mid.right + 4, dc_y + 2, dp_mid.right + 32, dc_y + 32);
+    let dp_prev = make_rect(card_drive.left + 68, dc_y, card_drive.left + 96, dc_y + 32);
+    let dp_next = make_rect(card_drive.right - 48, dc_y, card_drive.right - 16, dc_y + 32);
+    let dp_mid = make_rect(dp_prev.right + 6, dc_y, dp_next.left - 6, dc_y + 32);
 
     draw_button(
         hdc,
@@ -2688,19 +2552,20 @@ fn render_automations_tab(
         id: HitId::DriveNextProfile,
     });
 
-    // Timeout (segundos)
+    // Timeout (segundos), na linha abaixo do seletor de perfil
+    let dt_y = dc_y + 40;
     draw_text_in(
         hdc,
         &ui_t("automations.timeout_label"),
-        make_rect(dp_next.right + 16, dc_y, dp_next.right + 115, dc_y + 34),
+        make_rect(card_drive.left + 16, dt_y, card_drive.left + 150, dt_y + 32),
         f_body,
         pal.text_primary,
-        DT_LEFT.0 | DT_VCENTER.0 | DT_SINGLELINE.0,
+        DT_LEFT.0 | DT_VCENTER.0 | DT_SINGLELINE.0 | DT_END_ELLIPSIS.0,
     );
 
-    let dt_dec = make_rect(dp_next.right + 118, dc_y + 2, dp_next.right + 144, dc_y + 32);
-    let dt_inp = make_rect(dt_dec.right + 4, dc_y + 2, dt_dec.right + 68, dc_y + 32);
-    let dt_inc = make_rect(dt_inp.right + 4, dc_y + 2, dt_inp.right + 30, dc_y + 32);
+    let dt_dec = make_rect(card_drive.left + 154, dt_y, card_drive.left + 180, dt_y + 32);
+    let dt_inp = make_rect(dt_dec.right + 4, dt_y, dt_dec.right + 68, dt_y + 32);
+    let dt_inc = make_rect(dt_inp.right + 4, dt_y, dt_inp.right + 30, dt_y + 32);
 
     draw_button(
         hdc,
@@ -2765,7 +2630,12 @@ fn render_automations_tab(
     });
 
     // Botão Único e Dinâmico: Wait-Drive
-    let btn_dr_r = make_rect(dt_inc.right + 16, dc_y, card_drive.right - 16, dc_y + 34);
+    let btn_dr_r = make_rect(
+        card_drive.left + 16,
+        card_drive.bottom - 48,
+        card_drive.right - 16,
+        card_drive.bottom - 12,
+    );
     let t_disp = if st.drive_timeout_input.trim().is_empty() {
         ui_t("automations.timeout_none")
     } else {
@@ -3055,30 +2925,92 @@ fn render_settings_tab(
         id: HitId::UiStartupOff,
     });
 
-    // Informações do Sistema
-    let info_y = lang_y + 184;
-    draw_text_in(
-        hdc,
-        &ui_t("settings.binary_label"),
-        make_rect(area.left + 20, info_y, area.left + 220, info_y + 28),
-        f_body,
-        pal.text_primary,
-        DT_LEFT.0 | DT_VCENTER.0 | DT_SINGLELINE.0,
-    );
-    let bin_str = st
-        .binary_path
-        .as_ref()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| ui_t("settings.binary_missing"));
-    draw_text_in(
-        hdc,
-        &bin_str,
-        make_rect(area.left + 230, info_y, area.right - 20, info_y + 28),
-        f_mono,
-        pal.text_muted,
-        DT_LEFT.0 | DT_VCENTER.0 | DT_SINGLELINE.0 | DT_END_ELLIPSIS.0,
-    );
+    // Opção aninhada: organizar os ícones ao iniciar com o Windows. Só
+    // aparece quando a interface está configurada para iniciar com o sistema.
+    let mut nested_y = ui_start_y + 44;
+    if st.ui_startup_enabled {
+        let chk_organize = make_rect(area.left + 230, nested_y, area.right - 20, nested_y + 30);
+        draw_checkbox(
+            hdc,
+            chk_organize,
+            &ui_t("settings.organize_startup_label"),
+            st.startup_enabled,
+            st.hovered_id == Some(HitId::ToggleStartupBtn),
+            f_body,
+            pal,
+        );
+        st.hit_zones.push(HitZone {
+            rect: chk_organize,
+            id: HitId::ToggleStartupBtn,
+        });
 
+        // Perfil seguido pela organização automática ao iniciar.
+        let org_y = nested_y + 38;
+        draw_text_in(
+            hdc,
+            &ui_t("automations.startup_profile_label"),
+            make_rect(area.left + 230, org_y, area.left + 430, org_y + 32),
+            f_body,
+            pal.text_primary,
+            DT_LEFT.0 | DT_VCENTER.0 | DT_SINGLELINE.0 | DT_END_ELLIPSIS.0,
+        );
+
+        let prev_org = make_rect(area.left + 435, org_y, area.left + 467, org_y + 32);
+        let next_right = (area.left + 700).min(area.right - 20);
+        let next_org = make_rect(next_right - 32, org_y, next_right, org_y + 32);
+        let mid_org = make_rect(prev_org.right + 6, org_y, next_org.left - 6, org_y + 32);
+
+        draw_button(
+            hdc,
+            prev_org,
+            "◀",
+            f_sub_bold,
+            pal.bg_elevated,
+            pal.border,
+            pal.text_primary,
+            st.hovered_id == Some(HitId::StartupPrevProfile),
+            6,
+        );
+        st.hit_zones.push(HitZone {
+            rect: prev_org,
+            id: HitId::StartupPrevProfile,
+        });
+
+        draw_round_box(hdc, mid_org, pal.bg_input, pal.border, 6);
+        draw_text_in(
+            hdc,
+            &format!("📁 {}", profile_label(&st.startup_profile)),
+            mid_org,
+            f_sub_bold,
+            pal.text_primary,
+            DT_CENTER.0 | DT_VCENTER.0 | DT_SINGLELINE.0 | DT_END_ELLIPSIS.0,
+        );
+        st.hit_zones.push(HitZone {
+            rect: mid_org,
+            id: HitId::StartupNextProfile,
+        });
+
+        draw_button(
+            hdc,
+            next_org,
+            "▶",
+            f_sub_bold,
+            pal.bg_elevated,
+            pal.border,
+            pal.text_primary,
+            st.hovered_id == Some(HitId::StartupNextProfile),
+            6,
+        );
+        st.hit_zones.push(HitZone {
+            rect: next_org,
+            id: HitId::StartupNextProfile,
+        });
+
+        nested_y = org_y + 40;
+    }
+
+    // Informações do Sistema
+    let info_y = nested_y + 12;
     let res_txt = if st.display_resolution.0 > 0 && st.display_resolution.1 > 0 {
         ui_t_args(
             "settings.resolution_value",
@@ -3093,7 +3025,7 @@ fn render_settings_tab(
     draw_text_in(
         hdc,
         &ui_t("settings.resolution_label"),
-        make_rect(area.left + 20, info_y + 36, area.left + 220, info_y + 64),
+        make_rect(area.left + 20, info_y, area.left + 220, info_y + 28),
         f_body,
         pal.text_primary,
         DT_LEFT.0 | DT_VCENTER.0 | DT_SINGLELINE.0,
@@ -3101,50 +3033,11 @@ fn render_settings_tab(
     draw_text_in(
         hdc,
         &res_txt,
-        make_rect(area.left + 230, info_y + 36, area.right - 20, info_y + 64),
+        make_rect(area.left + 230, info_y, area.right - 20, info_y + 28),
         f_mono,
         pal.text_muted,
         DT_LEFT.0 | DT_VCENTER.0 | DT_SINGLELINE.0,
     );
-
-    draw_text_in(
-        hdc,
-        &ui_t("settings.profiles_dirs_label"),
-        make_rect(area.left + 20, info_y + 72, area.left + 220, info_y + 100),
-        f_body,
-        pal.text_primary,
-        DT_LEFT.0 | DT_VCENTER.0 | DT_SINGLELINE.0,
-    );
-    let p_dirs: Vec<String> = get_all_profiles_dirs()
-        .into_iter()
-        .map(|d| d.display().to_string())
-        .collect();
-    draw_text_in(
-        hdc,
-        &p_dirs.join("\n"),
-        make_rect(area.left + 230, info_y + 76, area.right - 20, info_y + 130),
-        f_mono,
-        pal.text_muted,
-        DT_LEFT.0 | DT_WORDBREAK.0,
-    );
-
-    // Botão Ajuda do CLI
-    let help_btn = make_rect(area.left + 20, info_y + 145, area.left + 300, info_y + 181);
-    draw_button(
-        hdc,
-        help_btn,
-        &ui_t("settings.cli_help"),
-        f_sub_bold,
-        pal.primary,
-        pal.primary_hover,
-        rgb(255, 255, 255),
-        st.hovered_id == Some(HitId::CliHelpBtn),
-        6,
-    );
-    st.hit_zones.push(HitZone {
-        rect: help_btn,
-        id: HitId::CliHelpBtn,
-    });
 }
 
 // ============================================================================
@@ -3329,9 +3222,6 @@ fn handle_click(hwnd: HWND, hit: HitId, mouse_x: i32, st: &mut GuiState) {
         HitId::CloseToTray => st.set_close_to_tray(true),
         HitId::UiStartupOn => st.set_ui_startup(true),
         HitId::UiStartupOff => st.set_ui_startup(false),
-        HitId::CliHelpBtn => {
-            st.execute_cli_action(&["help"]);
-        }
         HitId::RefreshAllBtn => {
             st.refresh_all_data(true);
         }

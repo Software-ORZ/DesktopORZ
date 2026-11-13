@@ -22,7 +22,7 @@
   },
   "tabs": {
     "profiles": "📁 Профили и рабочий стол",
-    "automations": "⚙️ Автоматизация (скрытие, автозапуск, облако)",
+    "automations": "⚙️ Автоматизация (скрытие, облако)",
     "settings": "🌐 Язык и система"
   },
   "status": {
@@ -109,16 +109,13 @@
     "close_label": "При закрытии окна:",
     "close_quit": "Закрыть программу",
     "close_tray": "Остаться в трее",
-    "binary_label": "Файл DesktopORZ:",
-    "binary_missing": "Не найден",
     "resolution_label": "Текущее разрешение экрана:",
     "resolution_value": "{width}x{height} пикселей",
     "resolution_loading": "определение...",
-    "profiles_dirs_label": "Папки профилей:",
-    "cli_help": "📖 Полная справка CLI (help)",
     "ui_startup_label": "Запуск с Windows:",
     "ui_startup_on": "Включено",
-    "ui_startup_off": "Отключено"
+    "ui_startup_off": "Отключено",
+    "organize_startup_label": "Упорядочивать значки при запуске системы"
   },
   "tray": {
     "restore": "Восстановить профиль: {profile}",

@@ -22,7 +22,7 @@
   },
   "tabs": {
     "profiles": "📁 配置文件与桌面",
-    "automations": "⚙️ 自动化（隐藏、自启动、云同步）",
+    "automations": "⚙️ 自动化（隐藏、云同步）",
     "settings": "🌐 语言与系统"
   },
   "status": {
@@ -109,16 +109,13 @@
     "close_label": "关闭窗口时：",
     "close_quit": "退出程序",
     "close_tray": "留在托盘",
-    "binary_label": "DesktopORZ 可执行文件：",
-    "binary_missing": "未找到",
     "resolution_label": "当前屏幕分辨率：",
     "resolution_value": "{width}x{height} 像素",
     "resolution_loading": "检测中...",
-    "profiles_dirs_label": "配置文件目录：",
-    "cli_help": "📖 显示完整 CLI 帮助（help）",
     "ui_startup_label": "随 Windows 启动：",
     "ui_startup_on": "已启用",
-    "ui_startup_off": "已禁用"
+    "ui_startup_off": "已禁用",
+    "organize_startup_label": "系统启动时自动排列图标"
   },
   "tray": {
     "restore": "恢复配置文件：{profile}",
