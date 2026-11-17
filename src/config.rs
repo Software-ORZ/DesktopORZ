@@ -35,6 +35,9 @@ pub struct CliConfig {
     /// (fonte da verdade: `HKCU\...\Run`, ver `ui_startup`).
     #[serde(default)]
     pub ui_startup: Option<bool>,
+    /// Controla se já existe a tarefa agendada para iniciar como administrador.
+    #[serde(default)]
+    pub scheduled_task: bool,
 }
 
 impl Default for CliConfig {
@@ -48,6 +51,7 @@ impl Default for CliConfig {
             ui_theme: None,
             close_to_tray: None,
             ui_startup: None,
+            scheduled_task: false,
         }
     }
 }
@@ -106,20 +110,35 @@ pub fn load_or_create_config() -> CliConfig {
         Ok(p) => p,
         Err(_) => return CliConfig::default(),
     };
-    match fs::read_to_string(&path) {
-        Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
-        Err(_) => {
-            let config = CliConfig::default();
-            let _ = save_config(&config);
-            config
+    if let Ok(text) = fs::read_to_string(&path) {
+        return serde_json::from_str(&text).unwrap_or_default();
+    }
+    if let Ok(cwd) = env::current_dir() {
+        let cwd_path = cwd.join("config.json");
+        if cwd_path != path {
+            if let Ok(text) = fs::read_to_string(&cwd_path) {
+                if let Ok(cfg) = serde_json::from_str::<CliConfig>(&text) {
+                    return cfg;
+                }
+            }
         }
     }
+    let config = CliConfig::default();
+    let _ = save_config(&config);
+    config
 }
 
 pub fn save_config(config: &CliConfig) -> Result<(), String> {
     let path = config_path()?;
     let json = serde_json::to_string_pretty(config).map_err(|e| format!("{e}"))?;
-    fs::write(&path, json).map_err(|e| format!("{e}"))
+    fs::write(&path, &json).map_err(|e| format!("{e}"))?;
+    if let Ok(cwd) = env::current_dir() {
+        let cwd_path = cwd.join("config.json");
+        if cwd_path != path && cwd_path.is_file() {
+            let _ = fs::write(&cwd_path, &json);
+        }
+    }
+    Ok(())
 }
 
 pub fn get_language() -> String {
@@ -162,10 +181,27 @@ pub fn set_wait_drive(mirror: Option<WaitDriveMirror>) {
     let _ = save_config(&config);
 }
 
+/// Lê o espelho da inicialização da interface no `config.json`.
+pub fn get_ui_startup() -> Option<bool> {
+    load_or_create_config().ui_startup
+}
+
 /// Grava o espelho da inicialização da interface no `config.json`.
 pub fn set_ui_startup(enabled: bool) {
     let mut config = load_or_create_config();
     config.ui_startup = Some(enabled);
+    let _ = save_config(&config);
+}
+
+/// Retorna se já existe tarefa agendada para iniciar como administrador.
+pub fn get_scheduled_task() -> bool {
+    load_or_create_config().scheduled_task
+}
+
+/// Grava no `config.json` se a tarefa agendada existe ou não.
+pub fn set_scheduled_task(exists: bool) {
+    let mut config = load_or_create_config();
+    config.scheduled_task = exists;
     let _ = save_config(&config);
 }
 
@@ -177,4 +213,40 @@ pub fn set_hide_icons(mirror: Option<HideIconsMirror>) {
     let mut config = load_or_create_config();
     config.hide_icons = mirror;
     let _ = save_config(&config);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_scheduled_task_default_false() {
+        let cfg = CliConfig::default();
+        assert!(!cfg.scheduled_task);
+    }
+
+    #[test]
+    fn test_scheduled_task_missing_in_json_defaults_to_false() {
+        let json = r#"{ "language": "pt-br" }"#;
+        let cfg: CliConfig = serde_json::from_str(json).expect("JSON válido");
+        assert!(!cfg.scheduled_task);
+    }
+
+    #[test]
+    fn test_scheduled_task_roundtrip_json() {
+        let json = r#"{
+            "language": "pt-br",
+            "ui_startup": true,
+            "scheduled_task": true
+        }"#;
+        let cfg: CliConfig = serde_json::from_str(json).expect("JSON válido");
+        assert!(cfg.scheduled_task);
+        assert_eq!(cfg.ui_startup, Some(true));
+
+        let serialized = serde_json::to_string_pretty(&cfg).expect("serialização válida");
+        assert!(serialized.contains("\"scheduled_task\": true"));
+
+        let reparsed: CliConfig = serde_json::from_str(&serialized).expect("reparse válido");
+        assert!(reparsed.scheduled_task);
+    }
 }

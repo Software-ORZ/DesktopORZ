@@ -16,5 +16,6 @@
     "inputs": 3,
     "include_cursor": true,
     "include_taskbar": true
-  }
+  },
+  "scheduled_task": false
 }

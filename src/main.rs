@@ -43,6 +43,7 @@ fn main() -> ExitCode {
 }
 
 fn run(args: &[String]) -> Result<String, String> {
+    desktoporz::ui_startup::ensure_scheduled_task_on_startup();
     match args.first().map(String::as_str) {
         Some("gui") => {
             gui::run_gui()?;

@@ -101,6 +101,11 @@ pub fn enable(profile: &str) -> Result<String, String> {
         profile: Some(profile.to_string()),
         command: Some(command),
     }));
+    // Se a tarefa agendada de inicialização elevada ainda não existir, cria
+    // automaticamente ao ativar o startup pelo CLI.
+    if !config::get_scheduled_task() {
+        let _ = crate::ui_startup::create_scheduled_task();
+    }
     // Se o ocultar-ícones estiver ativado, garante que o monitor também
     // inicie junto com o sistema (entrada Run própria + spawn imediato).
     if hide_icons::load_config().enabled {

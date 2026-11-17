@@ -726,6 +726,12 @@ impl GuiState {
         if let Some(close_to_tray) = cfg.close_to_tray {
             self.close_to_tray = close_to_tray;
         }
+
+        // Sincroniza a inicialização da interface com o Windows.
+        self.ui_startup_enabled = cfg
+            .ui_startup
+            .map(|enabled| enabled || cfg.scheduled_task)
+            .unwrap_or_else(crate::ui_startup::is_enabled);
     }
 
     fn apply_hide_icons_on(&mut self) -> bool {
@@ -3690,6 +3696,12 @@ fn ensure_elevated() -> Result<bool, String> {
             return Ok(true);
         }
 
+        // Se já existir tarefa agendada configurada com privilégios elevados,
+        // inicia por ela para evitar o prompt de confirmação do UAC.
+        if crate::ui_startup::run_scheduled_task() {
+            return Ok(false);
+        }
+
         let exe = env::current_exe().map_err(|e| format!("{e}"))?;
         let exe_wide: Vec<u16> = exe
             .as_os_str()
@@ -3750,6 +3762,34 @@ pub fn run_gui() -> Result<(), String> {
             return Err(error);
         }
     }
+
+    // Quando iniciado pelo Agendador de Tarefas, o diretório de trabalho costuma
+    // ser System32; restaura para a pasta do executável se ela contiver os arquivos.
+    if let Ok(exe) = env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            let cwd_is_system32 = env::current_dir()
+                .ok()
+                .and_then(|d| {
+                    d.to_str().map(|s| {
+                        s.trim_end_matches(['\\', '/'])
+                            .to_ascii_lowercase()
+                            .ends_with(r"\windows\system32")
+                    })
+                })
+                .unwrap_or(false);
+            if cwd_is_system32
+                && (exe_dir.join("config.json").is_file()
+                    || exe_dir.join("profiles").is_dir()
+                    || exe_dir.join("DesktopORZ.exe").is_file())
+            {
+                let _ = env::set_current_dir(exe_dir);
+            }
+        }
+    }
+
+    // Na primeira inicialização com a opção de iniciar com o sistema ativada,
+    // cria a tarefa agendada caso ainda não exista.
+    crate::ui_startup::ensure_scheduled_task_on_startup();
 
     unsafe {
         let hinstance = GetModuleHandleW(None).map_err(|e| format!("{e}"))?;
